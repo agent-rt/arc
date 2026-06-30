@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`arc cat <remote>`** — print a remote file to stdout (UTF-8, lossy), without
+  saving a local copy. The quick read companion to `pull`.
+- **`arc windows --filter <substr>`** — show only windows whose title or process
+  matches (case-insensitive), instead of grepping the full list. MCP
+  `list_windows` gains the same `filter` argument.
 - **`arc clip get` / `arc clip set`** — read or write the remote machine's
   clipboard. `clip set -` reads the text from stdin. Useful for moving text both
   ways without typing it character-by-character, and for reading what an app

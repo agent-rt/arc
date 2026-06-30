@@ -135,6 +135,9 @@ enum Cmd {
     /// happen (incremental, `.gitignore`-aware, build dirs ignored). Runs until
     /// interrupted. The dev-loop companion to a one-shot `push`.
     Watch { local: String, remote: String },
+    /// Print a remote file to stdout (UTF-8, lossy). For binary or to save a
+    /// copy, use `pull`.
+    Cat { remote: String },
     /// Capture a screenshot to a file. Encoding follows the file extension
     /// (`.png` → PNG, else WebP) — no client-side conversion needed.
     Screencap {
@@ -172,6 +175,10 @@ enum Cmd {
         /// Emit JSON instead of pipe-delimited text.
         #[arg(long)]
         json: bool,
+        /// Only show windows whose title or process matches this substring
+        /// (case-insensitive).
+        #[arg(long)]
+        filter: Option<String>,
     },
     /// List a window's UI Automation elements. `--json` emits structured records
     /// (id, control_type, name, automation_id, value, rect, actionable).
@@ -451,6 +458,7 @@ async fn run(cli: Cli) -> Result<i32> {
             whole,
         } => pull(&mut controller, &remote, &local, delete, dry_run, whole).await?,
         Cmd::Watch { local, remote } => watch(&mut controller, &local, &remote).await?,
+        Cmd::Cat { remote } => cat(&mut controller, &remote).await?,
         Cmd::Screencap {
             out,
             window,
@@ -463,7 +471,7 @@ async fn run(cli: Cli) -> Result<i32> {
             launch,
             wait,
         } => shot(&mut controller, &out, app, window, launch, wait).await?,
-        Cmd::Windows { json } => windows(&mut controller, json).await?,
+        Cmd::Windows { json, filter } => windows(&mut controller, json, filter.as_deref()).await?,
         Cmd::Elements { window, json } => elements(&mut controller, window, json).await?,
         Cmd::Find {
             window,
@@ -1251,6 +1259,34 @@ async fn pull_to(controller: &mut Controller, remote: &str, local: &Path) -> Res
     Ok(offset)
 }
 
+/// Streams a remote file to stdout in chunks (UTF-8, lossy).
+async fn cat(controller: &mut Controller, remote: &str) -> Result<()> {
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    let mut offset = 0u64;
+    loop {
+        let reply = controller
+            .request(Command::ReadFile {
+                path: remote.to_owned(),
+                offset,
+                max_len: CHUNK as u64,
+            })
+            .await?;
+        let bytes = match reply {
+            Reply::FileContents(bytes) => bytes,
+            other => bail!("unexpected reply: {other:?}"),
+        };
+        let read = bytes.len();
+        stdout.write_all(String::from_utf8_lossy(&bytes).as_bytes())?;
+        offset += read as u64;
+        if read < CHUNK {
+            break;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
 async fn screencap(
     controller: &mut Controller,
     out: &str,
@@ -1407,9 +1443,16 @@ async fn find_window(
     }
 }
 
-async fn windows(controller: &mut Controller, json: bool) -> Result<()> {
+async fn windows(controller: &mut Controller, json: bool, filter: Option<&str>) -> Result<()> {
     match controller.request(Command::ListWindows).await? {
-        Reply::Windows(windows) => {
+        Reply::Windows(mut windows) => {
+            if let Some(needle) = filter {
+                let needle = needle.to_lowercase();
+                windows.retain(|w| {
+                    w.title.to_lowercase().contains(&needle)
+                        || w.process.to_lowercase().contains(&needle)
+                });
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&windows)?);
             } else {

@@ -168,6 +168,14 @@ pub struct ClipboardSetArgs {
     pub text: String,
 }
 
+/// Arguments for [`AgentRc::list_windows`].
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListWindowsArgs {
+    /// Keep only windows whose title or process contains this (case-insensitive).
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
 /// Arguments for [`AgentRc::mouse`].
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MouseArgs {
@@ -403,11 +411,21 @@ impl AgentRc {
     }
 
     #[tool(
-        description = "List top-level windows on the remote desktop. Each line is `handle | process | title`; use the handle with list_elements."
+        description = "List top-level windows on the remote desktop. Each line is `handle | process | title`; use the handle with list_elements. Optional `filter` keeps only windows whose title or process contains it (case-insensitive)."
     )]
-    async fn list_windows(&self) -> Result<CallToolResult, McpError> {
+    async fn list_windows(
+        &self,
+        Parameters(args): Parameters<ListWindowsArgs>,
+    ) -> Result<CallToolResult, McpError> {
         match self.dispatch(Command::ListWindows).await? {
-            Reply::Windows(windows) => {
+            Reply::Windows(mut windows) => {
+                if let Some(needle) = args.filter.as_deref() {
+                    let needle = needle.to_lowercase();
+                    windows.retain(|w| {
+                        w.title.to_lowercase().contains(&needle)
+                            || w.process.to_lowercase().contains(&needle)
+                    });
+                }
                 let text = windows
                     .iter()
                     .map(|w| format!("{} | {} | {}", w.id.0, w.process, w.title))
