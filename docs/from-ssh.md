@@ -59,6 +59,7 @@ Verify: `arc -t win shell --cmd ver`.
 | `scp -r ./app win:C:/work/app` | `arc push ./app C:/work/app` — incremental, `.gitignore`-aware |
 | edit, then re-scp, repeat | `arc watch ./app C:/work/app` — auto-syncs on every save |
 | `ssh win 'cd C:/work/app && dotnet build'` | `arc shell --cmd 'dotnet build C:/work/app'` — output streams live |
+| `scp fix.ps1 win:tmp && ssh win 'powershell -File tmp/fix.ps1 -Port 8788'` | `arc run ./fix.ps1 -Port 8788` — ships the local script & runs it, no copy, no quoting |
 | `ssh win 'start app.exe'` | `arc open C:/work/app/bin/app.exe` |
 | connect RDP to see the window | `arc screencap shot.webp --window <handle>` |
 | click around by hand over RDP | `arc windows` → `arc elements <handle>` → `arc click <id>` / `arc set <id> 'text'` / `arc type` / `arc key ctrl+s` |

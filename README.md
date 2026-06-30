@@ -64,6 +64,7 @@ use `arc-runner install --relay <ws-url>`.
 
 ```bash
 arc shell --cmd 'dotnet build'      # run a command (streams live; --timeout <secs>)
+arc run ./fix.ps1 -Port 8788        # ship & run a local script (.ps1/.bat); args pass through
 arc push ./app C:/work/app          # send a tree up (incremental, .gitignore-aware)
 arc watch ./app C:/work/app         # auto-push on every save — the inner dev loop
 arc pull C:/work/app/bin ./bin      # fetch a tree (or file) back
@@ -116,7 +117,7 @@ zero-ssh edit → build → run → screenshot loop.
 ### MCP
 
 The same `arc` binary runs as a stdio MCP server with `arc --mcp`, exposing every
-capability as a tool (`run_command`, `screenshot`, `list_windows`,
+capability as a tool (`run_command`, `run_script`, `screenshot`, `list_windows`,
 `list_elements`, `click`, `type_text`, `set_value`, `read_file`, `write_file`,
 …). Register it with, e.g., [`mcpctl`](https://github.com/agent-rt/mcpctl):
 

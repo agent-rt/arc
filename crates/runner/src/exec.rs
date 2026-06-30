@@ -2,6 +2,7 @@
 //! workflow (build, run, test). Supports both buffered capture and live
 //! streaming of output as [`Event`]s.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -14,7 +15,16 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 use crate::dispatch::{RemoteResult, os_error, timeout_error};
 
-/// Builds the process with piped stdio and kill-on-drop.
+/// Applies the shared stdio config: no stdin, piped output, kill-on-drop.
+fn piped(builder: &mut Command) {
+    builder
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+}
+
+/// Builds the process for an inline command string with piped stdio.
 fn build(shell: Shell, command: &str) -> Command {
     let mut builder = match shell {
         Shell::PowerShell => {
@@ -28,11 +38,51 @@ fn build(shell: Shell, command: &str) -> Command {
             c
         }
     };
+    piped(&mut builder);
     builder
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+}
+
+/// The temp-file extension a shell's script must carry.
+fn script_ext(shell: Shell) -> &'static str {
+    match shell {
+        Shell::PowerShell => "ps1",
+        Shell::Cmd => "bat",
+    }
+}
+
+/// Writes `content` to a temp script file keyed by the request `id` (unique
+/// per in-flight request), returning its path. The caller deletes it after.
+fn write_temp_script(id: RequestId, shell: Shell, content: &str) -> std::io::Result<PathBuf> {
+    let mut path = std::env::temp_dir();
+    path.push(format!("arc-run-{id}.{}", script_ext(shell)));
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+/// Builds the process that runs the script at `path` with `args`. PowerShell
+/// runs with `-ExecutionPolicy Bypass -File` so no policy blocks it and `args`
+/// bind to the script's `param()`; cmd runs it via `/C`.
+fn build_script(shell: Shell, path: &Path, args: &[String]) -> Command {
+    let mut builder = match shell {
+        Shell::PowerShell => {
+            let mut c = Command::new("powershell");
+            c.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ]);
+            c.arg(path).args(args);
+            c
+        }
+        Shell::Cmd => {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(path).args(args);
+            c
+        }
+    };
+    piped(&mut builder);
     builder
 }
 
@@ -46,7 +96,28 @@ pub async fn run_command(
     command: &str,
     timeout_ms: Option<u64>,
 ) -> RemoteResult<Reply> {
-    let child = build(shell, command)
+    capture_process(build(shell, command), timeout_ms).await
+}
+
+/// Writes `content` to a temp script, runs it with `args` (buffered), and
+/// deletes the temp file regardless of outcome.
+pub async fn run_script(
+    id: RequestId,
+    shell: Shell,
+    content: &str,
+    args: &[String],
+    timeout_ms: Option<u64>,
+) -> RemoteResult<Reply> {
+    let path = write_temp_script(id, shell, content)
+        .map_err(|e| os_error(format!("writing temp script: {e}")))?;
+    let result = capture_process(build_script(shell, &path, args), timeout_ms).await;
+    let _ = tokio::fs::remove_file(&path).await;
+    result
+}
+
+/// Spawns `builder`, capturing stdout/stderr into a single [`Reply`].
+async fn capture_process(mut builder: Command, timeout_ms: Option<u64>) -> RemoteResult<Reply> {
+    let child = builder
         .spawn()
         .map_err(|e| os_error(format!("spawn failed: {e}")))?;
 
@@ -90,7 +161,41 @@ pub async fn run_command_streaming(
     command: &str,
     timeout_ms: Option<u64>,
 ) {
-    let mut child = match build(shell, command).spawn() {
+    stream_process(out, id, build(shell, command), timeout_ms).await;
+}
+
+/// Writes `content` to a temp script, streams its output, then deletes the
+/// temp file (the streaming analogue of [`run_script`]).
+pub async fn run_script_streaming(
+    out: &mpsc::Sender<Frame>,
+    id: RequestId,
+    shell: Shell,
+    content: &str,
+    args: &[String],
+    timeout_ms: Option<u64>,
+) {
+    let path = match write_temp_script(id, shell, content) {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = out
+                .send(done(id, Err(os_error(format!("writing temp script: {e}")))))
+                .await;
+            return;
+        }
+    };
+    stream_process(out, id, build_script(shell, &path, args), timeout_ms).await;
+    let _ = tokio::fs::remove_file(&path).await;
+}
+
+/// Spawns `builder`, streaming output to the controller as [`Event`]s and then
+/// a terminal [`Response`] (empty buffers — the bytes were already streamed).
+async fn stream_process(
+    out: &mpsc::Sender<Frame>,
+    id: RequestId,
+    mut builder: Command,
+    timeout_ms: Option<u64>,
+) {
+    let mut child = match builder.spawn() {
         Ok(child) => child,
         Err(e) => {
             let _ = out

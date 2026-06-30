@@ -68,6 +68,26 @@ pub enum Command {
         /// terminal [`Response`].
         stream: bool,
     },
+    /// Run a script by **content** (not a remote path). The runner writes
+    /// `content` to a temp file with the interpreter's extension, runs it with
+    /// `args` passed through, streams output like [`Command::RunCommand`], then
+    /// deletes the temp file. The source travels as a data field — never through
+    /// a shell — so there is no cross-shell quoting to escape, and PowerShell is
+    /// invoked with `-ExecutionPolicy Bypass -File` (no policy prompt, args bind
+    /// to the script's `param()` directly).
+    RunScript {
+        /// Which interpreter to run the script with.
+        shell: Shell,
+        /// The script source.
+        content: String,
+        /// Arguments passed to the script (each a separate process argument).
+        #[serde(default)]
+        args: Vec<String>,
+        /// Optional wall-clock timeout in milliseconds.
+        timeout_ms: Option<u64>,
+        /// If `true`, output streams as [`Event`]s before the terminal response.
+        stream: bool,
+    },
     /// Launch an application by path or registered name.
     OpenApp {
         /// Executable path or app name.

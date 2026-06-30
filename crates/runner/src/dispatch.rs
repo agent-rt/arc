@@ -5,6 +5,7 @@
 //! operations, so they run on [`tokio::task::spawn_blocking`] rather than
 //! occupying an async worker.
 
+use arc_proto::id::RequestId;
 use arc_proto::wire::{
     ClickTarget, Command, Frame, RemoteError, RemoteErrorKind, Reply, Request, Response,
 };
@@ -33,14 +34,21 @@ pub async fn handle(request: Request, out: &mpsc::Sender<Frame>) {
             timeout_ms,
             stream: true,
         } => exec::run_command_streaming(out, id, shell, &command, timeout_ms).await,
+        Command::RunScript {
+            shell,
+            content,
+            args,
+            timeout_ms,
+            stream: true,
+        } => exec::run_script_streaming(out, id, shell, &content, &args, timeout_ms).await,
         command => {
-            let result = dispatch_once(command).await;
+            let result = dispatch_once(id, command).await;
             let _ = out.send(Frame::Response(Response { id, result })).await;
         }
     }
 }
 
-async fn dispatch_once(command: Command) -> RemoteResult<Reply> {
+async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
     match command {
         Command::RunCommand {
             shell,
@@ -48,6 +56,13 @@ async fn dispatch_once(command: Command) -> RemoteResult<Reply> {
             timeout_ms,
             stream: false,
         } => exec::run_command(shell, &command, timeout_ms).await,
+        Command::RunScript {
+            shell,
+            content,
+            args,
+            timeout_ms,
+            stream: false,
+        } => exec::run_script(id, shell, &content, &args, timeout_ms).await,
         Command::Screenshot { target } => blocking(move || capture::screenshot(target)).await,
         Command::OpenApp { target, args } => blocking(move || apps::open_app(&target, &args)).await,
         Command::ListWindows => blocking(apps::list_windows).await,

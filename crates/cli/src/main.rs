@@ -83,6 +83,21 @@ enum Cmd {
         #[arg(trailing_var_arg = true, required = true)]
         args: Vec<String>,
     },
+    /// Run a local script on the runner: ships its *contents* (no pre-`push`, no
+    /// shell quoting to escape) and runs it with the matching interpreter
+    /// inferred from the extension — `.ps1` → PowerShell (`-ExecutionPolicy
+    /// Bypass`), `.bat`/`.cmd` → cmd. Output streams live; args after the script
+    /// pass through to it.
+    Run {
+        /// Path to a local script file (`.ps1`, `.bat`, or `.cmd`).
+        script: String,
+        /// Kill the script after this many seconds. Omitted = 10 min; `0` = no limit.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Arguments passed through to the script.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Send local → runner. A single file is always copied; a directory
     /// transfers incrementally (content-hash diff, `.gitignore`-aware, build
     /// dirs skipped) — `--whole` forces a full copy, `--delete` mirrors.
@@ -302,6 +317,13 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Shell { cmd, timeout, args } => {
             return shell(&mut controller, cmd, timeout, args).await;
         }
+        Cmd::Run {
+            script,
+            timeout,
+            args,
+        } => {
+            return run_script(&mut controller, &script, timeout, args).await;
+        }
         Cmd::Push {
             local,
             remote,
@@ -505,13 +527,68 @@ async fn shell(
         Shell::PowerShell
     };
     let command = args.join(" ");
-    // Omitted → default safety limit; explicit 0 → no limit; else seconds → ms.
-    let timeout_ms = match timeout_secs {
+    stream_run(
+        controller,
+        Command::RunCommand {
+            shell,
+            command,
+            timeout_ms: timeout_to_ms(timeout_secs),
+            stream: true,
+        },
+    )
+    .await
+}
+
+/// Reads a local script and runs it on the runner via [`Command::RunScript`] —
+/// shipping its contents (no pre-`push`, no shell quoting) under the
+/// interpreter inferred from its extension.
+async fn run_script(
+    controller: &mut Controller,
+    script: &str,
+    timeout_secs: Option<u64>,
+    args: Vec<String>,
+) -> Result<i32> {
+    let shell = shell_for_script(script)?;
+    let content = std::fs::read_to_string(script).with_context(|| format!("reading {script}"))?;
+    stream_run(
+        controller,
+        Command::RunScript {
+            shell,
+            content,
+            args,
+            timeout_ms: timeout_to_ms(timeout_secs),
+            stream: true,
+        },
+    )
+    .await
+}
+
+/// Picks the interpreter for a script by its file extension.
+fn shell_for_script(script: &str) -> Result<Shell> {
+    let ext = std::path::Path::new(script)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("ps1") => Ok(Shell::PowerShell),
+        Some("bat" | "cmd") => Ok(Shell::Cmd),
+        Some(other) => bail!("unsupported script type `.{other}` (expected .ps1, .bat, or .cmd)"),
+        None => bail!("`{script}` has no extension; expected .ps1, .bat, or .cmd"),
+    }
+}
+
+/// Omitted → default safety limit; explicit `0` → no limit; else seconds → ms.
+fn timeout_to_ms(timeout_secs: Option<u64>) -> Option<u64> {
+    match timeout_secs {
         None => Some(arc_proto::wire::DEFAULT_COMMAND_TIMEOUT_MS),
         Some(0) => None,
         Some(secs) => Some(secs.saturating_mul(1000)),
-    };
+    }
+}
 
+/// Runs a streaming command, printing stdout/stderr live, and returns its exit
+/// code. Shared by `shell` and `run`.
+async fn stream_run(controller: &mut Controller, command: Command) -> Result<i32> {
     let (tx, mut rx) = mpsc::channel::<Event>(256);
     let printer = tokio::spawn(async move {
         let mut out = std::io::stdout();
@@ -533,17 +610,7 @@ async fn shell(
         }
     });
 
-    let reply = controller
-        .request_streaming(
-            Command::RunCommand {
-                shell,
-                command,
-                timeout_ms,
-                stream: true,
-            },
-            &tx,
-        )
-        .await?;
+    let reply = controller.request_streaming(command, &tx).await?;
     drop(tx);
     let _ = printer.await;
 

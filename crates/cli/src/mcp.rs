@@ -54,6 +54,25 @@ pub struct RunCommandArgs {
     pub timeout_ms: Option<u64>,
 }
 
+/// Arguments for [`AgentRc::run_script`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunScriptArgs {
+    /// Script source to run on the remote Windows machine. Sent as data (not
+    /// through a shell), so there is no quoting to escape.
+    pub content: String,
+    /// Interpreter: `"powershell"` (default, runs with ExecutionPolicy Bypass)
+    /// or `"cmd"`.
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// Arguments passed through to the script.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Wall-clock timeout in milliseconds. Omitted = a default safety limit
+    /// (10 min); `0` = no limit.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Arguments for [`AgentRc::screenshot`].
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ScreenshotArgs {
@@ -206,16 +225,42 @@ impl AgentRc {
         Parameters(args): Parameters<RunCommandArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let shell = match args.shell.as_deref() {
-            Some("cmd") => Shell::Cmd,
-            _ => Shell::PowerShell,
+        let shell = parse_shell(args.shell.as_deref());
+        let command = Command::RunCommand {
+            shell,
+            command: args.command,
+            timeout_ms: clamp_timeout(args.timeout_ms),
+            stream: true,
         };
-        // Omitted → default safety limit; explicit 0 → no limit.
-        let timeout_ms = match args.timeout_ms {
-            None => Some(arc_proto::wire::DEFAULT_COMMAND_TIMEOUT_MS),
-            Some(0) => None,
-            Some(ms) => Some(ms),
+        self.stream_to_result(command, context).await
+    }
+
+    #[tool(
+        description = "Run a script by its source on the remote Windows machine. The script is sent as data (no shell quoting to escape, no pre-upload) and run with the chosen interpreter — PowerShell (default, ExecutionPolicy Bypass) or cmd — with `args` passed through. Output streams back live like run_command. Prefer this over run_command for any multi-line or quote-heavy script."
+    )]
+    async fn run_script(
+        &self,
+        Parameters(args): Parameters<RunScriptArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let command = Command::RunScript {
+            shell: parse_shell(args.shell.as_deref()),
+            content: args.content,
+            args: args.args,
+            timeout_ms: clamp_timeout(args.timeout_ms),
+            stream: true,
         };
+        self.stream_to_result(command, context).await
+    }
+
+    /// Runs a streaming `command`, relaying chunks as MCP progress (when the
+    /// client supplied a `progressToken`) and returning the full output. Shared
+    /// by [`run_command`](Self::run_command) and [`run_script`](Self::run_script).
+    async fn stream_to_result(
+        &self,
+        command: Command,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
         let token = context
             .meta
             .get_key_value("progressToken")
@@ -250,17 +295,7 @@ impl AgentRc {
             (stdout, stderr)
         });
 
-        let reply = self
-            .dispatch_streaming(
-                Command::RunCommand {
-                    shell,
-                    command: args.command,
-                    timeout_ms,
-                    stream: true,
-                },
-                tx,
-            )
-            .await;
+        let reply = self.dispatch_streaming(command, tx).await;
 
         // Always join the collector (its channel closed when `tx` dropped above).
         let (streamed_out, streamed_err) = collector.await.unwrap_or_default();
@@ -653,14 +688,31 @@ impl ServerHandler for AgentRc {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Remote-control a Windows machine for an Agent. Tools: run_command (shell), \
-                 screenshot (view the desktop). Requires a paired arc-runner connected \
-                 to the same relay session.",
+                 run_script (run a script by source), screenshot (view the desktop). \
+                 Requires a paired arc-runner connected to the same relay session.",
             )
     }
 }
 
 fn map_err(error: ControllerError) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+/// `"cmd"` → [`Shell::Cmd`]; anything else (incl. `None`) → [`Shell::PowerShell`].
+fn parse_shell(shell: Option<&str>) -> Shell {
+    match shell {
+        Some("cmd") => Shell::Cmd,
+        _ => Shell::PowerShell,
+    }
+}
+
+/// Omitted → default safety limit (10 min); explicit `0` → no limit; else as-is.
+fn clamp_timeout(timeout_ms: Option<u64>) -> Option<u64> {
+    match timeout_ms {
+        None => Some(arc_proto::wire::DEFAULT_COMMAND_TIMEOUT_MS),
+        Some(0) => None,
+        Some(ms) => Some(ms),
+    }
 }
 
 fn unexpected(reply: &Reply) -> McpError {
