@@ -57,6 +57,9 @@ Over Tailscale (recommended — no relay, no pairing code to copy):
 `arc-runner uninstall` removes the task. For relay mode instead of Tailscale,
 use `arc-runner install --relay <ws-url>`.
 
+> Coming from `ssh` + `scp`? See **[docs/from-ssh.md](docs/from-ssh.md)** for a
+> side-by-side migration of the common workflow.
+
 ## Usage
 
 ```bash
