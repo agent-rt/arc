@@ -142,7 +142,8 @@ jobs:
         with:
           identifier: agent-rt.arc-runner
           installers-regex: 'arc-runner\.exe$'
-          token: ${{ secrets.WINGET_TOKEN }}
+          fork-user: agent-rt # the org holding the winget-pkgs fork
+          token: ${{ secrets.GH_DIST_TOKEN }}
 
   # Generate/refresh the Homebrew formula in the tap (installs arc).
   update-formula:

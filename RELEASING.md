@@ -53,8 +53,16 @@ removes it.
 
 ### Extra one-time setup
 
-- Repo/org secret **`WINGET_TOKEN`**: a classic PAT (public_repo) on an account
-  that has forked `microsoft/winget-pkgs` — winget-releaser opens the PR from it.
+- **Fork `microsoft/winget-pkgs` into the `agent-rt` org** (→ `agent-rt/winget-pkgs`).
+  The `winget` job sets `fork-user: agent-rt`, so it pushes the manifest branch
+  there and opens the upstream PR — reusing the existing **`GH_DIST_TOKEN`** org
+  secret (no separate token needed).
+  - Caveat: this only works if `GH_DIST_TOKEN` can push to `agent-rt/winget-pkgs`
+    and open a PR to the public `microsoft/winget-pkgs` — i.e. a **classic PAT
+    with `public_repo`** (the owner being an `agent-rt` member). If it's a
+    fine-grained PAT scoped only to `homebrew-tap`, either add
+    `agent-rt/winget-pkgs` (Contents + Pull requests: write) to it, or use a
+    dedicated `WINGET_TOKEN`.
 - First `agent-rt.*` submission to winget-pkgs is reviewed/merged by Microsoft;
   later releases just bump the version.
 - Verify/pin the `winget-releaser` action ref (`@main` here) to a release tag.
