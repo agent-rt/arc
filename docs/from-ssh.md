@@ -102,15 +102,26 @@ The agent then calls `run_command`, `run_script`, `screenshot`, `list_windows`,
 
 ## Good to know
 
-- **Window screenshots now work disconnected — and aren't black.** Single-window
+- **Window screenshots work disconnected — and aren't black.** Single-window
   `screencap` uses **Windows.Graphics.Capture**, so it captures DirectComposition
   apps (**WinUI 3**, Chromium/Electron) correctly rather than black, and works
   even when RDP is disconnected. UIA `click`/`set`/`list_*`/`find`/`wait` also
   work disconnected. Still needing an **active** console/RDP session: `type`,
-  `key`, coordinate `mouse` (`SendInput`) and **full-screen** `screencap` (no
-  composed desktop to capture when disconnected). The runner runs in your
-  interactive session so these work whenever you're connected; while
+  `key`, coordinate `mouse` (`SendInput`) and **full-screen** `screencap`; while
   disconnected they fail cleanly (they don't hang).
+- **Freshly-launched apps + disconnected = blank, unless you keep the session
+  composing.** When RDP disconnects, the session has no display, so DWM stops
+  compositing — an app launched *after* you disconnect never renders its first
+  frame (you'll capture window chrome over a blank/backdrop). Windows that
+  rendered while you were connected keep their last frame and capture fine. The
+  fix is to give the disconnected session a display:
+  - **`arc-runner keep-display`** (run once, as Administrator) registers a task
+    that, on every RDP disconnect, moves the session to the **console display**
+    so DWM keeps compositing — fresh apps render and stay screenshot-able with no
+    RDP attached. Needs a monitor connected to the machine (it can be powered
+    off). `arc-runner keep-display --uninstall` removes it.
+  - **Truly headless** (no monitor at all): install a virtual display driver
+    (e.g. an IddCx-based one) so the session always has a display.
 - **Launching apps vs running commands.** `arc shell` runs a command to
   completion and streams its output — use it for builds, tests, scripts. To
   launch a GUI app, use `arc open <exe> [-- args]`: it returns immediately and

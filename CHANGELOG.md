@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`arc-runner keep-display`** — keeps a remote machine composing across RDP
+  disconnects so freshly-launched DirectComposition apps (WinUI 3, Chromium)
+  still render and screenshot. Registers a SYSTEM task that, on each RDP
+  disconnect, moves the session to the console display (`tscon … /dest:console`).
+  Needs Administrator and a monitor connected to the machine (may be powered
+  off); for a truly headless box use a virtual display driver instead.
+  `--uninstall` removes it.
+
 ## 0.4.0
 
 **Highlights: WinUI 3 / Chromium windows screenshot correctly (and work

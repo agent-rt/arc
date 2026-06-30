@@ -51,6 +51,7 @@ async fn main() -> Result<(), BoxError> {
         Some("install") => return run_install(&args[1..]),
         Some("uninstall") => return run_uninstall(),
         Some("upgrade") => return run_upgrade(&args[1..]),
+        Some("keep-display") => return run_keep_display(&args[1..]),
         Some("--version" | "-V" | "version") => {
             println!("arc-runner {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
@@ -319,6 +320,104 @@ fn run_uninstall() -> Result<(), BoxError> {
     } else {
         println!("No scheduled task '{TASK_NAME}' to remove.");
     }
+    Ok(())
+}
+
+/// Scheduled task that keeps the desktop composing across RDP disconnects.
+const KEEP_DISPLAY_TASK: &str = "arc-keep-display";
+
+/// Helper run by the `arc-keep-display` task: move any disconnected interactive
+/// session onto the console display so DWM keeps compositing (DirectComposition
+/// apps — WinUI 3 / Chromium — render and screenshot even with no RDP attached).
+const KEEP_DISPLAY_PS1: &str = "\
+# Installed by `arc-runner keep-display`. On RDP disconnect, redirect the\r
+# disconnected session to the console display so composition continues.\r
+foreach ($line in (query session)) {\r
+  if ($line -match '\\s(\\d+)\\s+Disc' -and $matches[1] -ne '0') {\r
+    tscon $matches[1] /dest:console 2>$null\r
+  }\r
+}\r
+";
+
+/// `arc-runner keep-display [--uninstall]`: register (or remove) a SYSTEM
+/// scheduled task that, on every RDP disconnect, moves the session to the
+/// console display — so freshly launched DirectComposition apps keep rendering
+/// (and stay screenshot-able) even while disconnected.
+///
+/// Needs Administrator (it registers a SYSTEM task) and a display connected to
+/// the console (a physical monitor is fine, even powered off). For a truly
+/// headless box with no display at all, install a virtual display driver
+/// instead.
+fn run_keep_display(args: &[String]) -> Result<(), BoxError> {
+    if args.iter().any(|a| a == "--uninstall" || a == "--off") {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/end", "/tn", KEEP_DISPLAY_TASK])
+            .status();
+        let deleted = std::process::Command::new("schtasks")
+            .args(["/delete", "/tn", KEEP_DISPLAY_TASK, "/f"])
+            .status()?;
+        if deleted.success() {
+            println!("Removed scheduled task '{KEEP_DISPLAY_TASK}'.");
+        } else {
+            println!("No scheduled task '{KEEP_DISPLAY_TASK}' to remove.");
+        }
+        return Ok(());
+    }
+
+    // Write the helper script to a stable, space-free path.
+    let dir = std::path::Path::new(r"C:\ProgramData\arc");
+    std::fs::create_dir_all(dir)?;
+    let script = dir.join("keep-display.ps1");
+    std::fs::write(&script, KEEP_DISPLAY_PS1)?;
+
+    // Register a SYSTEM task firing on session-disconnect (event 24).
+    let action = format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
+        script.display()
+    );
+    let created = std::process::Command::new("schtasks")
+        .args([
+            "/create",
+            "/tn",
+            KEEP_DISPLAY_TASK,
+            "/sc",
+            "ONEVENT",
+            "/ec",
+            "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+            "/mo",
+            "*[System[(EventID=24)]]",
+            "/tr",
+            &action,
+            "/ru",
+            "SYSTEM",
+            "/rl",
+            "HIGHEST",
+            "/f",
+        ])
+        .status()?;
+    if !created.success() {
+        return Err(
+            "schtasks /create failed — run this from an elevated (Administrator) prompt".into(),
+        );
+    }
+
+    // Fix the current state immediately (in case already disconnected).
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.display().to_string(),
+        ])
+        .status();
+
+    println!("Installed scheduled task '{KEEP_DISPLAY_TASK}'.");
+    println!("On RDP disconnect the session is moved to the console display, so DirectComposition");
+    println!(
+        "apps keep rendering and stay screenshot-able. Needs a display connected to the console"
+    );
+    println!("(a physical monitor, even powered off). `--uninstall` removes it.");
     Ok(())
 }
 
