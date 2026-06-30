@@ -138,6 +138,17 @@ enum Cmd {
     /// Print a remote file to stdout (UTF-8, lossy). For binary or to save a
     /// copy, use `pull`.
     Cat { remote: String },
+    /// Print the tail of a remote file; `-f` follows it (streams appended lines
+    /// until interrupted) — for watching logs.
+    Tail {
+        remote: String,
+        /// Number of trailing lines to print first.
+        #[arg(short = 'n', long, default_value_t = 10)]
+        lines: u64,
+        /// Follow: keep streaming new lines as the file grows.
+        #[arg(short = 'f', long)]
+        follow: bool,
+    },
     /// Capture a screenshot to a file. Encoding follows the file extension
     /// (`.png` → PNG, else WebP) — no client-side conversion needed.
     Screencap {
@@ -443,6 +454,13 @@ async fn run(cli: Cli) -> Result<i32> {
         } => {
             return run_script(&mut controller, &script, timeout, args).await;
         }
+        Cmd::Tail {
+            remote,
+            lines,
+            follow,
+        } => {
+            return tail(&mut controller, &remote, lines, follow).await;
+        }
         Cmd::Push {
             local,
             remote,
@@ -739,6 +757,28 @@ async fn shell(
             shell,
             command,
             timeout_ms: timeout_to_ms(timeout_secs),
+            stream: true,
+        },
+    )
+    .await
+}
+
+/// Streams the tail of a remote file via PowerShell `Get-Content`. With
+/// `follow`, uses `-Wait` and no timeout so appended lines stream until the user
+/// interrupts — the remote-log companion to `tail -f`.
+async fn tail(controller: &mut Controller, remote: &str, lines: u64, follow: bool) -> Result<i32> {
+    // Single-quote the path for PowerShell (doubling any embedded quote) so
+    // spaces and most metacharacters are taken literally.
+    let escaped = remote.replace('\'', "''");
+    let wait = if follow { " -Wait" } else { "" };
+    let command = format!("Get-Content -LiteralPath '{escaped}' -Tail {lines}{wait}");
+    stream_run(
+        controller,
+        Command::RunCommand {
+            shell: Shell::PowerShell,
+            command,
+            // No timeout: a follow runs until interrupted, and a plain tail is quick.
+            timeout_ms: None,
             stream: true,
         },
     )

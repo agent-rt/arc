@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`arc tail <remote>`** — print a remote file's last lines (`-n N`); `-f`
+  follows it, streaming appended lines until interrupted, for watching build/app
+  logs without a shell incantation.
 - **`arc cat <remote>`** — print a remote file to stdout (UTF-8, lossy), without
   saving a local copy. The quick read companion to `pull`.
 - **`arc windows --filter <substr>`** — show only windows whose title or process
