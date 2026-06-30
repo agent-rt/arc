@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`arc type --into <element-id>`** — focus a specific control (UIA `SetFocus`,
+  id from `elements`/`find`) before typing, then send real keystrokes. More
+  reliable than typing into whatever happens to have focus, and (unlike
+  `set`/SetValue) it drives the app's real input handling. MCP `type_text` gains
+  an `into` argument. (Verified into Win11 Notepad: focus lands in the right
+  element, ASCII + CJK type cleanly.)
 - **`screencap`/`shot` wake DWM before capturing** — on an idle session DWM
   throttles compositing, so a just-launched window's first frame can come back
   black. The runner now nudges the cursor (net-zero jiggle) before a capture, so

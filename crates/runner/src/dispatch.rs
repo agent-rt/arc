@@ -81,7 +81,17 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             wait_ms,
         } => blocking(move || uia::find_elements(window, &query, wait_ms)).await,
         Command::Click { target } => blocking(move || click(target)).await,
-        Command::TypeText { text } => blocking(move || input::type_text(&text)).await,
+        Command::TypeText { text, into } => {
+            blocking(move || {
+                // Focus the target element first (more reliable than typing into
+                // whatever happens to have focus), then send real keystrokes.
+                if let Some(element) = into {
+                    uia::focus(&element.0)?;
+                }
+                input::type_text(&text)
+            })
+            .await
+        }
         Command::KeyChord { modifiers, key } => {
             blocking(move || input::key_chord(&modifiers, key)).await
         }

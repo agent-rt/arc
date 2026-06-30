@@ -16,10 +16,10 @@
 //! [`NotFound`]: arc_proto::wire::RemoteErrorKind::NotFound
 
 #[cfg(windows)]
-pub use imp::{click_element, element_rect, find_elements, list_elements, set_value};
+pub use imp::{click_element, element_rect, find_elements, focus, list_elements, set_value};
 
 #[cfg(not(windows))]
-pub use stub::{click_element, element_rect, find_elements, list_elements, set_value};
+pub use stub::{click_element, element_rect, find_elements, focus, list_elements, set_value};
 
 #[cfg(not(windows))]
 mod stub {
@@ -49,6 +49,9 @@ mod stub {
         Err(unsupported())
     }
     pub fn element_rect(_element_id: &str) -> RemoteResult<arc_proto::wire::Rect> {
+        Err(unsupported())
+    }
+    pub fn focus(_element_id: &str) -> RemoteResult<()> {
         Err(unsupported())
     }
 }
@@ -223,6 +226,14 @@ mod imp {
             width: r.right - r.left,
             height: r.bottom - r.top,
         })
+    }
+
+    /// Gives an element keyboard focus (so subsequent typed keys land in it).
+    pub fn focus(element_id: &str) -> RemoteResult<()> {
+        let element = resolve(element_id)?;
+        // SAFETY: `element` is a live element resolved this call.
+        unsafe { element.SetFocus() }.map_err(|e| os_error(format!("set focus failed: {e}")))?;
+        Ok(())
     }
 
     /// Re-walks the window's subtree and returns the element whose RuntimeId

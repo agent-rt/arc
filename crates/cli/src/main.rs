@@ -241,7 +241,13 @@ enum Cmd {
     /// Click a UI element by its id (from `elements`).
     Click { element_id: String },
     /// Type Unicode text into the focused element.
-    Type { text: String },
+    Type {
+        text: String,
+        /// Focus this element first (id from `elements`/`find`) — more reliable
+        /// than typing into whatever currently has focus.
+        #[arg(long, value_name = "ELEMENT_ID")]
+        into: Option<String>,
+    },
     /// Press a key or chord — or a sequence of them: `enter`, `esc`, `f5`,
     /// `ctrl+c`, `ctrl+shift+esc`, `alt+f4`. Modifiers (`ctrl`/`alt`/`shift`/
     /// `win`) join the key with `+`. Multiple chords run in order on one
@@ -499,7 +505,16 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await?;
         }
-        Cmd::Type { text } => ack(&mut controller, Command::TypeText { text }).await?,
+        Cmd::Type { text, into } => {
+            ack(
+                &mut controller,
+                Command::TypeText {
+                    text,
+                    into: into.map(ElementId),
+                },
+            )
+            .await?
+        }
         Cmd::Key { chords } => keys(&mut controller, chords).await?,
         Cmd::Mouse { action } => {
             ack(

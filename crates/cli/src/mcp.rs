@@ -145,6 +145,10 @@ pub struct ClickPointArgs {
 pub struct TypeTextArgs {
     /// Unicode text to type into the focused element.
     pub text: String,
+    /// Optional element id (from `list_elements`/`find_elements`) to focus
+    /// before typing — more reliable than typing into whatever has focus.
+    #[serde(default)]
+    pub into: Option<String>,
 }
 
 /// Arguments for [`AgentRc::press_key`].
@@ -496,7 +500,11 @@ impl AgentRc {
         &self,
         Parameters(args): Parameters<TypeTextArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.ack(Command::TypeText { text: args.text }).await
+        self.ack(Command::TypeText {
+            text: args.text,
+            into: args.into.map(arc_proto::id::ElementId),
+        })
+        .await
     }
 
     #[tool(

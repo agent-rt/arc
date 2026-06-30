@@ -144,6 +144,11 @@ pub enum Command {
     TypeText {
         /// Text to inject.
         text: String,
+        /// If set, focus this element (UIA `SetFocus`) before typing — more
+        /// reliable for text fields than typing into whatever currently has
+        /// focus, and (unlike `SetValue`) drives the app's real input handling.
+        #[serde(default)]
+        into: Option<ElementId>,
     },
     /// Set the value of a UI element directly (preferred over keystrokes).
     SetValue {
