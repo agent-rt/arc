@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
+
+CLI-only release (no runner/protocol changes — a 0.6.0 runner works unchanged).
 
 - **Internals:** the CLI crate's monolithic `main.rs` (~2150 lines) was split
   into domain modules (`config`, `exec`, `files`, `capture`, `ui`, `agents_md`);
