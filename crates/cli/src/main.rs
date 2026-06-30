@@ -202,9 +202,15 @@ enum Cmd {
     Click { element_id: String },
     /// Type Unicode text into the focused element.
     Type { text: String },
-    /// Press a key or chord: `enter`, `esc`, `f5`, `ctrl+c`, `ctrl+shift+esc`,
-    /// `alt+f4`. Modifiers (`ctrl`/`alt`/`shift`/`win`) join with `+`.
-    Key { chord: String },
+    /// Press a key or chord — or a sequence of them: `enter`, `esc`, `f5`,
+    /// `ctrl+c`, `ctrl+shift+esc`, `alt+f4`. Modifiers (`ctrl`/`alt`/`shift`/
+    /// `win`) join the key with `+`. Multiple chords run in order on one
+    /// connection (e.g. `arc key ctrl+a delete enter`).
+    Key {
+        /// One or more chords, applied in order.
+        #[arg(required = true)]
+        chords: Vec<String>,
+    },
     /// Inject a mouse action at screen coordinates.
     Mouse {
         #[command(subcommand)]
@@ -440,10 +446,7 @@ async fn run(cli: Cli) -> Result<i32> {
             .await?;
         }
         Cmd::Type { text } => ack(&mut controller, Command::TypeText { text }).await?,
-        Cmd::Key { chord } => {
-            let (modifiers, key) = arc_proto::wire::parse_chord(&chord).map_err(|e| anyhow!(e))?;
-            ack(&mut controller, Command::KeyChord { modifiers, key }).await?;
-        }
+        Cmd::Key { chords } => keys(&mut controller, chords).await?,
         Cmd::Mouse { action } => {
             ack(
                 &mut controller,
@@ -1251,4 +1254,22 @@ async fn ack(controller: &mut Controller, command: Command) -> Result<()> {
         Reply::Ack => Ok(()),
         other => bail!("expected ack, got {other:?}"),
     }
+}
+
+/// Sends a sequence of key chords in order on one connection. All chords are
+/// parsed up front (so a bad chord aborts before anything is pressed), then
+/// applied with a short gap between them for reliable delivery to WinUI apps.
+async fn keys(controller: &mut Controller, chords: Vec<String>) -> Result<()> {
+    let parsed = chords
+        .iter()
+        .map(|c| arc_proto::wire::parse_chord(c).map_err(|e| anyhow!("{c}: {e}")))
+        .collect::<Result<Vec<_>>>()?;
+    let last = parsed.len().saturating_sub(1);
+    for (i, (modifiers, key)) in parsed.into_iter().enumerate() {
+        ack(controller, Command::KeyChord { modifiers, key }).await?;
+        if i < last {
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+    }
+    Ok(())
 }

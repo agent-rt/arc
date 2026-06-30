@@ -146,10 +146,11 @@ pub struct TypeTextArgs {
 /// Arguments for [`AgentRc::press_key`].
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PressKeyArgs {
-    /// Key or chord to press, e.g. `"enter"`, `"esc"`, `"f5"`, `"ctrl+c"`,
+    /// One or more chords, pressed in order — e.g. `["ctrl+a","delete"]`, or a
+    /// single `["enter"]`. Each chord: `"enter"`, `"esc"`, `"f5"`, `"ctrl+c"`,
     /// `"ctrl+shift+esc"`, `"alt+f4"`. Modifiers (`ctrl`/`alt`/`shift`/`win`)
     /// join the key with `+`. For ordinary text, prefer `type_text`.
-    pub chord: String,
+    pub keys: Vec<String>,
 }
 
 /// Arguments for [`AgentRc::mouse`].
@@ -485,15 +486,29 @@ impl AgentRc {
     }
 
     #[tool(
-        description = "Press a key or chord that type_text cannot express: Enter, Tab, Esc, arrows, F-keys, and combinations like ctrl+c, ctrl+s, alt+f4 (modifiers ctrl/alt/shift/win join the key with +). For ordinary text, use type_text."
+        description = "Press a key/chord — or a sequence of them — that type_text cannot express: Enter, Tab, Esc, arrows, F-keys, and combinations like ctrl+c, ctrl+s, alt+f4 (modifiers ctrl/alt/shift/win join the key with +). Pass keys as an ordered array, e.g. [\"ctrl+a\",\"delete\"]. For ordinary text, use type_text."
     )]
     async fn press_key(
         &self,
         Parameters(args): Parameters<PressKeyArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (modifiers, key) = parse_chord(&args.chord)
-            .map_err(|e| McpError::invalid_params(format!("invalid key chord: {e}"), None))?;
-        self.ack(Command::KeyChord { modifiers, key }).await
+        if args.keys.is_empty() {
+            return Err(McpError::invalid_params("keys must not be empty".to_owned(), None));
+        }
+        let last = args.keys.len() - 1;
+        for (i, chord) in args.keys.iter().enumerate() {
+            let (modifiers, key) = parse_chord(chord).map_err(|e| {
+                McpError::invalid_params(format!("invalid key chord '{chord}': {e}"), None)
+            })?;
+            match self.dispatch(Command::KeyChord { modifiers, key }).await? {
+                Reply::Ack => {}
+                other => return Err(unexpected(&other)),
+            }
+            if i < last {
+                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            }
+        }
+        Ok(CallToolResult::success(vec![Content::text("ok")]))
     }
 
     #[tool(
