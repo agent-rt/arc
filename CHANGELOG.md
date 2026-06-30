@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`arc key … --into <element-id>`** — focus an element before sending the key
+  chords (symmetric with `type --into`); MCP `press_key` gains `into`. Backed by
+  a new `FocusElement` command.
+- **`arc kill --dry-run`** — list the processes a kill *would* hit (by PID or
+  name) without killing them. MCP `kill_process` gains `dry_run`.
+- **MCP `list_processes` / `kill_process`** — first-class process tools mirroring
+  `arc ps` / `arc kill`, so the Agent doesn't have to hand-roll PowerShell.
 - **`arc activate <hwnd>`** — restore (if minimized) and foreground a window, so
   a capture or input lands on a real, visible window instead of a title-bar
   sliver. `arc shot` now does this automatically before capturing. MCP:

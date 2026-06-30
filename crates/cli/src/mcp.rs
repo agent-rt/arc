@@ -163,6 +163,9 @@ pub struct PressKeyArgs {
     /// `"ctrl+shift+esc"`, `"alt+f4"`. Modifiers (`ctrl`/`alt`/`shift`/`win`)
     /// join the key with `+`. For ordinary text, prefer `type_text`.
     pub keys: Vec<String>,
+    /// Optional element id to focus before sending the chords.
+    #[serde(default)]
+    pub into: Option<String>,
 }
 
 /// Arguments for [`AgentRc::clipboard_set`].
@@ -184,6 +187,24 @@ pub struct ActivateWindowArgs {
 pub struct ReadElementArgs {
     /// Element id (from `list_elements`/`find_elements`).
     pub element_id: String,
+}
+
+/// Arguments for [`AgentRc::list_processes`].
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListProcessesArgs {
+    /// Keep only processes whose name contains this (case-insensitive).
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+/// Arguments for [`AgentRc::kill_process`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct KillProcessArgs {
+    /// PID (all digits) or process name (with or without `.exe`).
+    pub process: String,
+    /// List what would be killed instead of killing.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 /// Arguments for [`AgentRc::list_windows`].
@@ -585,7 +606,59 @@ impl AgentRc {
     }
 
     #[tool(
-        description = "Press a key/chord — or a sequence of them — that type_text cannot express: Enter, Tab, Esc, arrows, F-keys, and combinations like ctrl+c, ctrl+s, alt+f4 (modifiers ctrl/alt/shift/win join the key with +). Pass keys as an ordered array, e.g. [\"ctrl+a\",\"delete\"]. For ordinary text, use type_text."
+        description = "List remote processes (Id, name, working-set MB; heaviest first). Optional `pattern` keeps only processes whose name contains it (case-insensitive)."
+    )]
+    async fn list_processes(
+        &self,
+        Parameters(args): Parameters<ListProcessesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let filter = match args.pattern.as_deref() {
+            Some(p) => format!(
+                " | Where-Object {{ $_.ProcessName -like '*{}*' }}",
+                p.replace('\'', "''")
+            ),
+            None => String::new(),
+        };
+        let command = format!(
+            "Get-Process{filter} | Sort-Object -Descending WS | \
+             Select-Object Id, ProcessName, @{{Name='MB';Expression={{[math]::Round($_.WS/1MB,1)}}}} | \
+             Format-Table -AutoSize | Out-String -Width 200"
+        );
+        self.run_ps(command).await
+    }
+
+    #[tool(
+        description = "Kill a remote process by PID (all digits) or by name (with/without .exe; a name kills every match). Set dry_run:true to list what would be killed without killing."
+    )]
+    async fn kill_process(
+        &self,
+        Parameters(args): Parameters<KillProcessArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let selector = if args.process.chars().all(|c| c.is_ascii_digit()) {
+            format!("Get-Process -Id {} -ErrorAction Stop", args.process)
+        } else {
+            let name = args
+                .process
+                .strip_suffix(".exe")
+                .unwrap_or(&args.process)
+                .replace('\'', "''");
+            format!("Get-Process -Name '{name}' -ErrorAction Stop")
+        };
+        let command = if args.dry_run.unwrap_or(false) {
+            format!(
+                "{selector} | ForEach-Object {{ \"would kill $($_.ProcessName) (PID $($_.Id))\" }}"
+            )
+        } else {
+            format!(
+                "{selector} | Stop-Process -Force -PassThru | \
+                 ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
+            )
+        };
+        self.run_ps(command).await
+    }
+
+    #[tool(
+        description = "Press a key/chord — or a sequence of them — that type_text cannot express: Enter, Tab, Esc, arrows, F-keys, and combinations like ctrl+c, ctrl+s, alt+f4 (modifiers ctrl/alt/shift/win join the key with +). Pass keys as an ordered array, e.g. [\"ctrl+a\",\"delete\"]. Optional `into` (element id) focuses that control first. For ordinary text, use type_text."
     )]
     async fn press_key(
         &self,
@@ -596,6 +669,17 @@ impl AgentRc {
                 "keys must not be empty".to_owned(),
                 None,
             ));
+        }
+        if let Some(element_id) = args.into {
+            match self
+                .dispatch(Command::FocusElement {
+                    element: ElementId(element_id),
+                })
+                .await?
+            {
+                Reply::Ack => {}
+                other => return Err(unexpected(&other)),
+            }
         }
         let last = args.keys.len() - 1;
         for (i, chord) in args.keys.iter().enumerate() {
@@ -777,6 +861,32 @@ impl AgentRc {
     async fn ack(&self, command: Command) -> Result<CallToolResult, McpError> {
         match self.dispatch(command).await? {
             Reply::Ack => Ok(CallToolResult::success(vec![Content::text("ok")])),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Runs a PowerShell command (non-streaming) and returns its output as text.
+    async fn run_ps(&self, command: String) -> Result<CallToolResult, McpError> {
+        match self
+            .dispatch(Command::RunCommand {
+                shell: Shell::PowerShell,
+                command,
+                timeout_ms: Some(30_000),
+                stream: false,
+            })
+            .await?
+        {
+            Reply::CommandOutput { stdout, stderr, .. } => {
+                let body = if stderr.trim().is_empty() {
+                    stdout
+                } else {
+                    format!("{stdout}{stderr}")
+                };
+                Ok(CallToolResult::success(vec![Content::text(blank_as(
+                    body.trim_end().to_owned(),
+                    "<no output>",
+                ))]))
+            }
             other => Err(unexpected(&other)),
         }
     }

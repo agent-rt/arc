@@ -91,7 +91,7 @@ arc read <element-id>               # read one control's text (verify without a 
 arc set <element-id> 'text'         # set a control's value directly
 arc type 'hello' --into <element-id>   # focus an element, then type into it
 arc type "$(cat big.txt)" --into <id> --paste   # paste long text via clipboard (fast)
-arc key ctrl+a delete enter         # key chords in sequence: enter, f5, ctrl+c, alt+f4…
+arc key ctrl+a delete --into <id>   # key chords in sequence (--into focuses an element first)
 arc mouse drag 40 80 300 400        # move / click / down / up / scroll / drag
 arc clip get                        # read the remote clipboard; arc clip set 'text'
 ```

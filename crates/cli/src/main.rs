@@ -156,6 +156,9 @@ enum Cmd {
     Kill {
         /// PID (all digits) or process name (with or without `.exe`).
         process: String,
+        /// List the matching processes without killing them.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Print the tail of a remote file; `-f` follows it (streams appended lines
     /// until interrupted) — for watching logs.
@@ -314,6 +317,10 @@ enum Cmd {
         /// One or more chords, applied in order.
         #[arg(required = true)]
         chords: Vec<String>,
+        /// Focus this element first (id from `elements`/`find`) before sending
+        /// the chords — symmetric with `type --into`.
+        #[arg(long, value_name = "ELEMENT_ID")]
+        into: Option<String>,
     },
     /// Inject a mouse action at screen coordinates.
     Mouse {
@@ -497,8 +504,8 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Ps { pattern } => {
             return ps(&mut controller, pattern.as_deref()).await;
         }
-        Cmd::Kill { process } => {
-            return kill(&mut controller, &process).await;
+        Cmd::Kill { process, dry_run } => {
+            return kill(&mut controller, &process, dry_run).await;
         }
         Cmd::Tail {
             remote,
@@ -638,7 +645,7 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await?
         }
-        Cmd::Key { chords } => keys(&mut controller, chords).await?,
+        Cmd::Key { chords, into } => keys(&mut controller, chords, into).await?,
         Cmd::Mouse { action } => {
             ack(
                 &mut controller,
@@ -873,19 +880,23 @@ async fn ps(controller: &mut Controller, pattern: Option<&str>) -> Result<i32> {
 }
 
 /// Kills a remote process by PID (all-digit `target`) or by name (`-Force`).
-async fn kill(controller: &mut Controller, target: &str) -> Result<i32> {
-    let command = if target.chars().all(|c| c.is_ascii_digit()) {
-        format!(
-            "Stop-Process -Id {target} -Force -PassThru | ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
-        )
+/// With `dry_run`, lists the matching processes instead of killing them.
+async fn kill(controller: &mut Controller, target: &str, dry_run: bool) -> Result<i32> {
+    // The process set to act on, by PID or by name (with/without a `.exe`).
+    let selector = if target.chars().all(|c| c.is_ascii_digit()) {
+        format!("Get-Process -Id {target} -ErrorAction Stop")
     } else {
-        // Match by process name (with or without a trailing .exe).
         let name = target
             .strip_suffix(".exe")
             .unwrap_or(target)
             .replace('\'', "''");
+        format!("Get-Process -Name '{name}' -ErrorAction Stop")
+    };
+    let command = if dry_run {
+        format!("{selector} | ForEach-Object {{ \"would kill $($_.ProcessName) (PID $($_.Id))\" }}")
+    } else {
         format!(
-            "Get-Process -Name '{name}' -ErrorAction Stop | Stop-Process -Force -PassThru | \
+            "{selector} | Stop-Process -Force -PassThru | \
              ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
         )
     };
@@ -1856,11 +1867,25 @@ async fn ack(controller: &mut Controller, command: Command) -> Result<()> {
 /// Sends a sequence of key chords in order on one connection. All chords are
 /// parsed up front (so a bad chord aborts before anything is pressed), then
 /// applied with a short gap between them for reliable delivery to WinUI apps.
-async fn keys(controller: &mut Controller, chords: Vec<String>) -> Result<()> {
+async fn keys(
+    controller: &mut Controller,
+    chords: Vec<String>,
+    into: Option<String>,
+) -> Result<()> {
     let parsed = chords
         .iter()
         .map(|c| arc_proto::wire::parse_chord(c).map_err(|e| anyhow!("{c}: {e}")))
         .collect::<Result<Vec<_>>>()?;
+    // Focus the target element first (chords are sent to whatever has focus).
+    if let Some(element_id) = into {
+        ack(
+            controller,
+            Command::FocusElement {
+                element: ElementId(element_id),
+            },
+        )
+        .await?;
+    }
     let last = parsed.len().saturating_sub(1);
     for (i, (modifiers, key)) in parsed.into_iter().enumerate() {
         ack(controller, Command::KeyChord { modifiers, key }).await?;

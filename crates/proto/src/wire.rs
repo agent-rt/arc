@@ -242,6 +242,13 @@ pub enum Command {
         /// Target element.
         element: ElementId,
     },
+    /// Give a UI element keyboard focus (UIA `SetFocus`), so subsequent
+    /// keystrokes land in it. Pairs with [`Command::KeyChord`] for "focus this
+    /// field, then send a chord".
+    FocusElement {
+        /// Target element.
+        element: ElementId,
+    },
     /// Read the runner's clipboard as text (returns [`Reply::Text`]; empty if
     /// the clipboard holds no text).
     ClipboardGet,

@@ -113,6 +113,9 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
         Command::ReadElement { element } => {
             blocking(move || uia::read_element(&element.0).map(Reply::Text)).await
         }
+        Command::FocusElement { element } => {
+            blocking(move || uia::focus(&element.0).map(|()| Reply::Ack)).await
+        }
         Command::ClipboardGet => blocking(|| clipboard::get().map(Reply::Text)).await,
         Command::ClipboardSet { text } => {
             blocking(move || clipboard::set(&text).map(|()| Reply::Ack)).await
