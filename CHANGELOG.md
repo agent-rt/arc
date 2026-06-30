@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - **`arc-runner keep-display`** — keeps a remote machine composing across RDP
   disconnects so freshly-launched DirectComposition apps (WinUI 3, Chromium)

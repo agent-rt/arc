@@ -119,7 +119,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-capture"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "image",
  "windows",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "arc-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-net",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "arc-net"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-proto",
  "futures-util",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "arc-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake2",
  "ciborium",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "arc-relay"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-proto",
  "axum",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "arc-runner"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-capture",
  "arc-net",
