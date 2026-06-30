@@ -65,7 +65,8 @@ Verify: `arc -t win shell --cmd ver`.
 | `scp fix.ps1 win:tmp && ssh win 'powershell -File tmp/fix.ps1 -Port 8788'` | `arc run ./fix.ps1 -Port 8788` — ships the local script & runs it, no copy, no quoting |
 | `ssh win 'start app.exe'` | `arc open C:/work/app/bin/app.exe` |
 | connect RDP to see the window | `arc screencap shot.webp --window <handle>` |
-| click around by hand over RDP | `arc windows` → `arc elements <handle>` → `arc click <id>` / `arc set <id> 'text'` / `arc type` / `arc key ctrl+s` |
+| click around by hand over RDP | `arc windows` → `arc find <handle> --name Save` (or `arc elements <handle>`) → `arc click <id>` / `arc set <id> 'text'` / `arc type` / `arc key ctrl+a delete` |
+| wait for a control to appear | `arc wait <handle> --name "Done" --timeout 30` |
 | `scp win:C:/work/app/bin ./bin` | `arc pull C:/work/app/bin ./bin` |
 
 ## 5. The inner loop (e.g. a WinUI 3 / .NET app)
@@ -95,17 +96,21 @@ mcpctl server add arc --command arc --args --mcp \
   --env ARC_DIRECT=<tailnet-ip>:8787 --env ARC_PAIRING=<code-if-not-trust-tailnet>
 ```
 
-The agent then calls `run_command`, `screenshot`, `list_windows`,
-`list_elements`, `click`, `type_text`, `set_value`, `read_file`, `write_file`, …
-as tools. Long builds stream back as progress.
+The agent then calls `run_command`, `run_script`, `screenshot`, `list_windows`,
+`list_elements`, `find_elements`, `click`, `type_text`, `press_key`, `set_value`,
+`read_file`, `write_file`, … as tools. Long builds stream back as progress.
 
 ## Good to know
 
-- **Session state matters.** UIA `click`/`set`/`list_*` and single-window
-  `screencap` work even when the session is disconnected; `type`, `key`,
-  coordinate `mouse`, and full-screen `screencap` need an **active** console/RDP
-  session (they use `SendInput`/DXGI). The runner runs in your interactive
-  session precisely so these work.
+- **Window screenshots now work disconnected — and aren't black.** Single-window
+  `screencap` uses **Windows.Graphics.Capture**, so it captures DirectComposition
+  apps (**WinUI 3**, Chromium/Electron) correctly rather than black, and works
+  even when RDP is disconnected. UIA `click`/`set`/`list_*`/`find`/`wait` also
+  work disconnected. Still needing an **active** console/RDP session: `type`,
+  `key`, coordinate `mouse` (`SendInput`) and **full-screen** `screencap` (no
+  composed desktop to capture when disconnected). The runner runs in your
+  interactive session so these work whenever you're connected; while
+  disconnected they fail cleanly (they don't hang).
 - **Launching apps vs running commands.** `arc shell` runs a command to
   completion and streams its output — use it for builds, tests, scripts. To
   launch a GUI app, use `arc open <exe> [-- args]`: it returns immediately and
