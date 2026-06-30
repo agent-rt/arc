@@ -7,9 +7,33 @@ crates.io. `arc` is both the CLI and the MCP server (`arc --mcp`). Mirrors the
 
 ## Cut a release
 
+Versioning is **SemVer**; pre-1.0 the *minor* covers both new features and
+breaking changes (0.1.0 → 0.2.0 added the `run` / `RunScript` command), the
+*patch* is backward-compatible fixes only. Bump the workspace version, commit,
+tag `vX.Y.Z`, and **push the tag** — the tag is what triggers the workflow.
+
+With [`cargo-release`](https://github.com/crate-ci/cargo-release) installed:
+
 ```bash
-just release 0.1.0     # cargo-release: bump workspace version, commit, tag v0.1.0, push
+just release 0.2.0     # bump workspace version, commit, tag v0.2.0, push
 ```
+
+Without it (the manual path — what 0.2.0 actually shipped with):
+
+```bash
+# 1. bump `version` in [workspace.package] of Cargo.toml (all crates inherit it)
+# 2. sync the lockfile so CI's `--locked` build matches the new version
+cargo build -p arc-cli
+# 3. commit the bump on main, then tag (gpg signing off — the repo defaults to
+#    annotated/signed tags) and push the tag
+git commit -am "release 0.2.0"
+git -c tag.gpgSign=false tag -a v0.2.0 -m "arc 0.2.0"
+git push origin main v0.2.0
+```
+
+> In the jj-colocated checkout, commit/bookmark with `jj` and `jj git push
+> --bookmark main`, then create and push the git tag with the two `git` commands
+> above (jj doesn't manage tags).
 
 `.github/workflows/release.yml` (on tag `v*`) then:
 
@@ -27,7 +51,8 @@ just release 0.1.0     # cargo-release: bump workspace version, commit, tag v0.1
 
 - Repo secret **`GH_DIST_TOKEN`**: a PAT with `contents:write` on
   `agent-rt/homebrew-tap` (same token mcpctl uses).
-- `cargo install cargo-release` locally (for `just release`).
+- `cargo install cargo-release` locally — optional, only for `just release`;
+  the manual path above needs no extra tooling.
 
 ## Install (end users)
 
@@ -65,16 +90,24 @@ removes it.
     dedicated `WINGET_TOKEN`.
 - **First submission is manual.** `winget-releaser` only *updates* a package
   that already exists in winget-pkgs — so the `winget` job is `continue-on-error`
-  and will fail until the package is bootstrapped once. To bootstrap, after the
-  release publishes `arc-runner.exe`:
-  ```bash
-  # komac (or wingetcreate) — opens the initial PR from the agent-rt fork
-  komac new agent-rt.arc-runner \
-    --urls https://github.com/agent-rt/arc/releases/download/v0.1.0/arc-runner.exe \
-    --version 0.1.0
-  ```
-  Microsoft reviews/merges it; from then on the `winget` job auto-bumps each
-  release (and goes green).
+  and fails (`Package … does not exist`) until the package is bootstrapped once.
+  `komac`/`wingetcreate` need a TTY (they fail in CI/sandbox), so bootstrap by
+  opening the first PR directly via the GitHub API: sync the
+  `agent-rt/winget-pkgs` fork, add a branch with the three manifests
+  (`version` / `installer` / `locale`; `InstallerType: portable`,
+  `Commands: [arc-runner]`, **uppercase** `InstallerSha256`) under
+  `manifests/a/agent-rt/arc-runner/<ver>/`, then
+  `gh pr create --repo microsoft/winget-pkgs --head agent-rt:<branch>`.
+  New publisher + unsigned exe → manual moderation, which can take days.
+  - **Status:** PR
+    [microsoft/winget-pkgs#395316](https://github.com/microsoft/winget-pkgs/pull/395316)
+    (bootstraps `agent-rt.arc-runner` 0.1.0) is **open, CLA cleared, awaiting a
+    moderator**.
+  - Once it merges the package exists, so the *current* version is published by
+    re-running the latest release's failed `winget` job —
+    `gh run rerun --job <id> --repo agent-rt/arc` (e.g. job `84221036236` of the
+    v0.2.0 run). From then on every release's `winget` job auto-bumps and goes
+    green.
 - The `winget-releaser` action is pinned to `@v2` (its maintained release tag).
 
 ## TODO

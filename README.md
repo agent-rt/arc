@@ -107,7 +107,10 @@ content-hashed with one round-trip to skip unchanged files, never walking build
 dirs (`target`/`bin`/`obj`/…). Flags: `--delete` (mirror the source),
 `--dry-run`, `--whole` (skip the diff). `arc watch` keeps a tree mirrored live
 (debounced, build-churn-ignoring) — pair it with `arc shell '<build>'` for a
-zero-ssh edit → build → run → screenshot loop.
+zero-ssh edit → build → run → screenshot loop. To run a local script on the box,
+`arc run ./script.ps1 [args]` ships its contents and executes it (interpreter by
+extension; `.ps1` runs with `-ExecutionPolicy Bypass`) — no `push` first, no
+cross-shell quoting to escape, args passed straight through.
 
 > The model is *code lives on your Mac; the Windows box is a build/run
 > container.* With **Windows App SDK 2.x** an unpackaged WinUI 3 app builds with
