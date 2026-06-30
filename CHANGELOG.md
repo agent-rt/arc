@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`arc agents-md`** — print a complete Markdown reference of every command and
+  flag (generated from the CLI itself, so it never drifts) preceded by
+  agent-oriented guidance: connecting, core workflows, and the
+  session-capability gotchas. Made for handing an AI agent the whole tool
+  surface in one read instead of drilling into 24 `--help` screens. Runs locally
+  — no runner connection. (`arc agents-md > AGENTS.md`.)
+- **Help polish** — documented previously-bare positional arguments
+  (`push`/`pull`/`watch` source/dest, `set`, `cat`, `tail`, `clip set`, `type`,
+  `elements`/`wait` filters) so both `--help` and `agents-md` describe them;
+  removed an internal note that had leaked into `activate`'s help text.
+
 ## 0.6.0
 
 **Highlights: a much larger CLI/MCP surface driven by real agent usage —

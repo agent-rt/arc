@@ -94,6 +94,7 @@ arc type "$(cat big.txt)" --into <id> --paste   # paste long text via clipboard 
 arc key ctrl+a delete --into <id>   # key chords in sequence (--into focuses an element first)
 arc mouse drag 40 80 300 400        # move / click / down / up / scroll / drag
 arc clip get                        # read the remote clipboard; arc clip set 'text'
+arc agents-md                        # full Markdown command reference for an AI agent
 ```
 
 ### Connecting
