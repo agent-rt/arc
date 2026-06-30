@@ -149,6 +149,11 @@ pub enum Command {
         /// focus, and (unlike `SetValue`) drives the app's real input handling.
         #[serde(default)]
         into: Option<ElementId>,
+        /// Paste via the clipboard (set clipboard + Ctrl+V) instead of per-key
+        /// injection — far faster and more reliable for long text. Clobbers the
+        /// clipboard. Combine with `into` to target a specific control.
+        #[serde(default)]
+        paste: bool,
     },
     /// Set the value of a UI element directly (preferred over keystrokes).
     SetValue {
@@ -223,6 +228,19 @@ pub enum Command {
     Mouse {
         /// What the mouse should do.
         action: MouseAction,
+    },
+    /// Bring a window to the foreground, restoring it first if minimized — so a
+    /// subsequent capture/input lands on a real, visible window.
+    ActivateWindow {
+        /// Target window.
+        window: WindowId,
+    },
+    /// Read a single element's text (returns [`Reply::Text`]) — its Value-pattern
+    /// value if it has one, else its accessible name. Cheaper than dumping the
+    /// whole element tree just to verify one control.
+    ReadElement {
+        /// Target element.
+        element: ElementId,
     },
     /// Read the runner's clipboard as text (returns [`Reply::Text`]; empty if
     /// the clipboard holds no text).

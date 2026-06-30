@@ -16,10 +16,14 @@
 //! [`NotFound`]: arc_proto::wire::RemoteErrorKind::NotFound
 
 #[cfg(windows)]
-pub use imp::{click_element, element_rect, find_elements, focus, list_elements, set_value};
+pub use imp::{
+    click_element, element_rect, find_elements, focus, list_elements, read_element, set_value,
+};
 
 #[cfg(not(windows))]
-pub use stub::{click_element, element_rect, find_elements, focus, list_elements, set_value};
+pub use stub::{
+    click_element, element_rect, find_elements, focus, list_elements, read_element, set_value,
+};
 
 #[cfg(not(windows))]
 mod stub {
@@ -52,6 +56,9 @@ mod stub {
         Err(unsupported())
     }
     pub fn focus(_element_id: &str) -> RemoteResult<()> {
+        Err(unsupported())
+    }
+    pub fn read_element(_element_id: &str) -> RemoteResult<String> {
         Err(unsupported())
     }
 }
@@ -234,6 +241,29 @@ mod imp {
         // SAFETY: `element` is a live element resolved this call.
         unsafe { element.SetFocus() }.map_err(|e| os_error(format!("set focus failed: {e}")))?;
         Ok(())
+    }
+
+    /// Reads an element's text: its Value-pattern value if it has one (Edit,
+    /// ComboBox, …), else its accessible name. Empty string if neither is set.
+    pub fn read_element(element_id: &str) -> RemoteResult<String> {
+        let element = resolve(element_id)?;
+        // SAFETY: `element` is live this call; each accessor returns a checked
+        // Result and the Value-pattern pointer is null-checked by `ok()`.
+        unsafe {
+            let value = element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                .ok()
+                .and_then(|p| p.CurrentValue().ok())
+                .map(|b| b.to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(value) = value {
+                return Ok(value);
+            }
+            Ok(element
+                .CurrentName()
+                .map(|b| b.to_string())
+                .unwrap_or_default())
+        }
     }
 
     /// Re-walks the window's subtree and returns the element whose RuntimeId

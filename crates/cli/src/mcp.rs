@@ -149,6 +149,10 @@ pub struct TypeTextArgs {
     /// before typing — more reliable than typing into whatever has focus.
     #[serde(default)]
     pub into: Option<String>,
+    /// Paste via the clipboard (Ctrl+V) instead of per-key injection — far
+    /// faster for long text. Clobbers the clipboard.
+    #[serde(default)]
+    pub paste: bool,
 }
 
 /// Arguments for [`AgentRc::press_key`].
@@ -166,6 +170,20 @@ pub struct PressKeyArgs {
 pub struct ClipboardSetArgs {
     /// Text to place on the remote clipboard.
     pub text: String,
+}
+
+/// Arguments for [`AgentRc::activate_window`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ActivateWindowArgs {
+    /// Window handle (from `list_windows`).
+    pub window: u64,
+}
+
+/// Arguments for [`AgentRc::read_element`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadElementArgs {
+    /// Element id (from `list_elements`/`find_elements`).
+    pub element_id: String,
 }
 
 /// Arguments for [`AgentRc::list_windows`].
@@ -520,7 +538,9 @@ impl AgentRc {
         .await
     }
 
-    #[tool(description = "Type Unicode text into the focused element on the remote machine.")]
+    #[tool(
+        description = "Type Unicode text into the focused element on the remote machine. Optional `into` (element id) focuses that control first. Set `paste:true` to paste via the clipboard (Ctrl+V) for long text — faster, but clobbers the clipboard."
+    )]
     async fn type_text(
         &self,
         Parameters(args): Parameters<TypeTextArgs>,
@@ -528,8 +548,40 @@ impl AgentRc {
         self.ack(Command::TypeText {
             text: args.text,
             into: args.into.map(arc_proto::id::ElementId),
+            paste: args.paste,
         })
         .await
+    }
+
+    #[tool(
+        description = "Bring a window (by handle, from list_windows) to the foreground, restoring it if minimized — call before screenshotting/driving it so the capture isn't a minimized sliver."
+    )]
+    async fn activate_window(
+        &self,
+        Parameters(args): Parameters<ActivateWindowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ack(Command::ActivateWindow {
+            window: WindowId(args.window),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read one UI element's text (its value, else accessible name) by element_id — cheaper than list_elements when verifying a single control."
+    )]
+    async fn read_element(
+        &self,
+        Parameters(args): Parameters<ReadElementArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .dispatch(Command::ReadElement {
+                element: ElementId(args.element_id),
+            })
+            .await?
+        {
+            Reply::Text(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            other => Err(unexpected(&other)),
+        }
     }
 
     #[tool(

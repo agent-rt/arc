@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`arc activate <hwnd>`** — restore (if minimized) and foreground a window, so
+  a capture or input lands on a real, visible window instead of a title-bar
+  sliver. `arc shot` now does this automatically before capturing. MCP:
+  `activate_window`.
+- **`arc type --paste`** — paste text via the clipboard (Ctrl+V) instead of
+  per-key injection: one round-trip for a whole paragraph instead of 16 ms per
+  character, and more robust for long text. Combine with `--into` to target a
+  control. Clobbers the clipboard. MCP: `type_text` gains `paste`.
+- **`arc read <element-id>`** — read one control's text (its Value-pattern value,
+  else accessible name) without dumping the whole element tree — a token-cheap
+  way to verify "did my input land / has it loaded" without a screenshot. MCP:
+  `read_element`.
 - **`arc ps [pattern]` / `arc kill <pid|name>`** — list remote processes (Id,
   name, working-set MB, heaviest first; optional name-substring filter) and kill
   one by PID or by name (`-Force`; a name kills every match, reporting each).

@@ -84,10 +84,13 @@ arc elements <hwnd> --json          # list a window's UI Automation elements
 arc find <hwnd> --type Button --name Save   # query elements by attribute (no full dump)
 arc wait <hwnd> --name Done --timeout 30     # block until a matching element appears
 arc open notepad                    # launch an app
+arc activate <hwnd>                 # restore + foreground a window (before capture/input)
 arc ps notepad                      # list remote processes; arc kill <pid|name>
 arc click <element-id>              # click a UI element (from `elements`)
+arc read <element-id>               # read one control's text (verify without a screenshot)
 arc set <element-id> 'text'         # set a control's value directly
 arc type 'hello' --into <element-id>   # focus an element, then type into it
+arc type "$(cat big.txt)" --into <id> --paste   # paste long text via clipboard (fast)
 arc key ctrl+a delete enter         # key chords in sequence: enter, f5, ctrl+c, alt+f4…
 arc mouse drag 40 80 300 400        # move / click / down / up / scroll / drag
 arc clip get                        # read the remote clipboard; arc clip set 'text'

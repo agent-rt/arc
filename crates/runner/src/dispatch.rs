@@ -81,14 +81,27 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             wait_ms,
         } => blocking(move || uia::find_elements(window, &query, wait_ms)).await,
         Command::Click { target } => blocking(move || click(target)).await,
-        Command::TypeText { text, into } => {
+        Command::TypeText { text, into, paste } => {
             blocking(move || {
-                // Focus the target element first (more reliable than typing into
-                // whatever happens to have focus), then send real keystrokes.
-                if let Some(element) = into {
-                    uia::focus(&element.0)?;
+                if paste {
+                    // Clipboard paste: set the clipboard, focus the target, Ctrl+V.
+                    // Far faster/more reliable than per-key injection for long text.
+                    clipboard::set(&text)?;
+                    if let Some(element) = into {
+                        uia::focus(&element.0)?;
+                    }
+                    input::key_chord(
+                        &[arc_proto::wire::Modifier::Ctrl],
+                        arc_proto::wire::Key::Char('v'),
+                    )
+                } else {
+                    // Focus the target element first (more reliable than typing
+                    // into whatever happens to have focus), then send real keys.
+                    if let Some(element) = into {
+                        uia::focus(&element.0)?;
+                    }
+                    input::type_text(&text)
                 }
-                input::type_text(&text)
             })
             .await
         }
@@ -96,6 +109,10 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             blocking(move || input::key_chord(&modifiers, key)).await
         }
         Command::Mouse { action } => blocking(move || input::mouse(action)).await,
+        Command::ActivateWindow { window } => blocking(move || apps::activate_window(window)).await,
+        Command::ReadElement { element } => {
+            blocking(move || uia::read_element(&element.0).map(Reply::Text)).await
+        }
         Command::ClipboardGet => blocking(|| clipboard::get().map(Reply::Text)).await,
         Command::ClipboardSet { text } => {
             blocking(move || clipboard::set(&text).map(|()| Reply::Ack)).await

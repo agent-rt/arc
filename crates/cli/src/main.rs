@@ -285,8 +285,15 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Bring a window to the foreground, restoring it if minimized — so a
+    /// capture or input lands on a real, visible window. (Field is `window`, not
+    /// `target`, to avoid the global `-t/--target` arg-id collision.)
+    Activate { window: u64 },
     /// Click a UI element by its id (from `elements`).
     Click { element_id: String },
+    /// Read one element's text (its value, else accessible name) — cheaper than
+    /// dumping the whole element tree to verify a single control.
+    Read { element_id: String },
     /// Type Unicode text into the focused element.
     Type {
         text: String,
@@ -294,6 +301,10 @@ enum Cmd {
         /// than typing into whatever currently has focus.
         #[arg(long, value_name = "ELEMENT_ID")]
         into: Option<String>,
+        /// Paste via the clipboard (Ctrl+V) instead of per-key injection — far
+        /// faster for long text. Clobbers the clipboard.
+        #[arg(long)]
+        paste: bool,
     },
     /// Press a key or chord — or a sequence of them: `enter`, `esc`, `f5`,
     /// `ctrl+c`, `ctrl+shift+esc`, `alt+f4`. Modifiers (`ctrl`/`alt`/`shift`/
@@ -589,6 +600,15 @@ async fn run(cli: Cli) -> Result<i32> {
             .await;
         }
         Cmd::Open { app, args } => open(&mut controller, app, args).await?,
+        Cmd::Activate { window } => {
+            ack(
+                &mut controller,
+                Command::ActivateWindow {
+                    window: WindowId(window),
+                },
+            )
+            .await?;
+        }
         Cmd::Click { element_id } => {
             ack(
                 &mut controller,
@@ -598,12 +618,22 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await?;
         }
-        Cmd::Type { text, into } => {
+        Cmd::Read { element_id } => match controller
+            .request(Command::ReadElement {
+                element: ElementId(element_id),
+            })
+            .await?
+        {
+            Reply::Text(text) => println!("{text}"),
+            other => bail!("unexpected reply: {other:?}"),
+        },
+        Cmd::Type { text, into, paste } => {
             ack(
                 &mut controller,
                 Command::TypeText {
                     text,
                     into: into.map(ElementId),
+                    paste,
                 },
             )
             .await?
@@ -1646,6 +1676,16 @@ async fn shot(
             .ok_or_else(|| anyhow!("pass --window <handle>, --app <substr>, or --launch <exe>"))?;
         find_window(controller, &needle, deadline).await?
     };
+
+    // Restore + foreground the window first: a minimized window captures as a
+    // useless title-bar sliver, so "verify the UI" must bring it up.
+    ack(
+        controller,
+        Command::ActivateWindow {
+            window: WindowId(hwnd),
+        },
+    )
+    .await?;
 
     let remaining = deadline
         .saturating_duration_since(std::time::Instant::now())

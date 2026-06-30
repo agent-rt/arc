@@ -145,9 +145,41 @@ fn process_name(hwnd: windows::Win32::Foundation::HWND) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(&path).to_owned()
 }
 
+/// Restores a window if minimized and brings it to the foreground, so a
+/// subsequent capture or input lands on a real, visible window.
+#[cfg(windows)]
+pub fn activate_window(window: WindowId) -> RemoteResult<Reply> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsIconic, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
+    };
+    let hwnd = HWND(window.0 as *mut std::ffi::c_void);
+    // SAFETY: `hwnd` is a window handle supplied by the controller (from
+    // `list_windows`); these calls are no-ops on a stale/invalid handle.
+    unsafe {
+        let cmd = if IsIconic(hwnd).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindow(hwnd, cmd);
+        // Best-effort: foreground can be refused by the OS focus-stealing rules,
+        // but the restore above is what unblanks a minimized capture.
+        let _ = SetForegroundWindow(hwnd);
+    }
+    Ok(Reply::Ack)
+}
+
 #[cfg(not(windows))]
 pub fn list_windows() -> RemoteResult<Reply> {
     Err(os_error(
         "window enumeration is only supported on Windows".to_owned(),
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn activate_window(_window: WindowId) -> RemoteResult<Reply> {
+    Err(os_error(
+        "window activation is only supported on Windows".to_owned(),
     ))
 }
