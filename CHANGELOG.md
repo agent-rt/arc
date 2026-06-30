@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+**Highlights: a much larger CLI/MCP surface driven by real agent usage —
+structured `--json` output, reliable text entry, clipboard, log follow, a
+screenshot regression diff, process control, and window activation. Fresh
+windows also screenshot reliably (DWM is woken before capture).**
 
 - **`arc key … --into <element-id>`** — focus an element before sending the key
   chords (symmetric with `type --into`); MCP `press_key` gains `into`. Backed by
