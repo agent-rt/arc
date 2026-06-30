@@ -63,8 +63,18 @@ removes it.
     fine-grained PAT scoped only to `homebrew-tap`, either add
     `agent-rt/winget-pkgs` (Contents + Pull requests: write) to it, or use a
     dedicated `WINGET_TOKEN`.
-- First `agent-rt.*` submission to winget-pkgs is reviewed/merged by Microsoft;
-  later releases just bump the version.
+- **First submission is manual.** `winget-releaser` only *updates* a package
+  that already exists in winget-pkgs — so the `winget` job is `continue-on-error`
+  and will fail until the package is bootstrapped once. To bootstrap, after the
+  release publishes `arc-runner.exe`:
+  ```bash
+  # komac (or wingetcreate) — opens the initial PR from the agent-rt fork
+  komac new agent-rt.arc-runner \
+    --urls https://github.com/agent-rt/arc/releases/download/v0.1.0/arc-runner.exe \
+    --version 0.1.0
+  ```
+  Microsoft reviews/merges it; from then on the `winget` job auto-bumps each
+  release (and goes green).
 - Verify/pin the `winget-releaser` action ref (`@main` here) to a release tag.
 
 ## TODO
