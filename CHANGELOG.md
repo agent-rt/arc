@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`arc ps [pattern]` / `arc kill <pid|name>`** — list remote processes (Id,
+  name, working-set MB, heaviest first; optional name-substring filter) and kill
+  one by PID or by name (`-Force`; a name kills every match, reporting each).
 - **`arc screencap --baseline <img>`** — compare the capture against a baseline
   and print a verdict (`MATCH` / `DIFFERS: N% of pixels changed`), exiting
   non-zero past `--threshold` (default 0.1%) so it drops into a regression gate.

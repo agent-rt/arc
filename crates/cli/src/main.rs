@@ -145,6 +145,18 @@ enum Cmd {
     /// Print a remote file to stdout (UTF-8, lossy). For binary or to save a
     /// copy, use `pull`.
     Cat { remote: String },
+    /// List remote processes (Id, name, working-set MB), heaviest first. An
+    /// optional substring filters by process name.
+    Ps {
+        /// Only show processes whose name contains this (case-insensitive).
+        pattern: Option<String>,
+    },
+    /// Kill a remote process by PID (all digits) or by name (`-Force`). A name
+    /// kills every matching process.
+    Kill {
+        /// PID (all digits) or process name (with or without `.exe`).
+        process: String,
+    },
     /// Print the tail of a remote file; `-f` follows it (streams appended lines
     /// until interrupted) — for watching logs.
     Tail {
@@ -471,6 +483,12 @@ async fn run(cli: Cli) -> Result<i32> {
         } => {
             return run_script(&mut controller, &script, timeout, args).await;
         }
+        Cmd::Ps { pattern } => {
+            return ps(&mut controller, pattern.as_deref()).await;
+        }
+        Cmd::Kill { process } => {
+            return kill(&mut controller, &process).await;
+        }
         Cmd::Tail {
             remote,
             lines,
@@ -792,6 +810,61 @@ async fn shell(
             shell,
             command,
             timeout_ms: timeout_to_ms(timeout_secs),
+            stream: true,
+        },
+    )
+    .await
+}
+
+/// Lists remote processes via PowerShell, optionally filtered by name substring.
+async fn ps(controller: &mut Controller, pattern: Option<&str>) -> Result<i32> {
+    let filter = match pattern {
+        Some(p) => format!(
+            " | Where-Object {{ $_.ProcessName -like '*{}*' }}",
+            p.replace('\'', "''")
+        ),
+        None => String::new(),
+    };
+    let command = format!(
+        "Get-Process{filter} | Sort-Object -Descending WS | \
+         Select-Object Id, ProcessName, @{{Name='MB';Expression={{[math]::Round($_.WS/1MB,1)}}}} | \
+         Format-Table -AutoSize | Out-String -Width 200"
+    );
+    stream_run(
+        controller,
+        Command::RunCommand {
+            shell: Shell::PowerShell,
+            command,
+            timeout_ms: timeout_to_ms(Some(30)),
+            stream: true,
+        },
+    )
+    .await
+}
+
+/// Kills a remote process by PID (all-digit `target`) or by name (`-Force`).
+async fn kill(controller: &mut Controller, target: &str) -> Result<i32> {
+    let command = if target.chars().all(|c| c.is_ascii_digit()) {
+        format!(
+            "Stop-Process -Id {target} -Force -PassThru | ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
+        )
+    } else {
+        // Match by process name (with or without a trailing .exe).
+        let name = target
+            .strip_suffix(".exe")
+            .unwrap_or(target)
+            .replace('\'', "''");
+        format!(
+            "Get-Process -Name '{name}' -ErrorAction Stop | Stop-Process -Force -PassThru | \
+             ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
+        )
+    };
+    stream_run(
+        controller,
+        Command::RunCommand {
+            shell: Shell::PowerShell,
+            command,
+            timeout_ms: timeout_to_ms(Some(30)),
             stream: true,
         },
     )
