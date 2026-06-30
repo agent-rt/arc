@@ -75,7 +75,7 @@ removes it.
   ```
   Microsoft reviews/merges it; from then on the `winget` job auto-bumps each
   release (and goes green).
-- Verify/pin the `winget-releaser` action ref (`@main` here) to a release tag.
+- The `winget-releaser` action is pinned to `@v2` (its maintained release tag).
 
 ## TODO
 
