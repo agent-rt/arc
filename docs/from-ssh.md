@@ -27,12 +27,15 @@ winget install agent-rt.arc-runner
 ## 2. Register the runner (once, on Windows)
 
 ```powershell
-arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
+arc-runner install --tailscale
 ```
 
-- `<tailnet-ip>` is the Windows machine's Tailscale IP (`tailscale ip -4`).
-- `--trust-tailnet --allow <login>` authenticates you by **Tailscale identity** —
-  no pairing code to copy. (Drop these for a pairing-code flow instead.)
+- `--tailscale` auto-detects the machine's Tailscale IP (`tailscale ip -4`),
+  listens on `<ip>:8787`, and authenticates callers by **Tailscale identity** —
+  no pairing code to copy — restricting access to this node's Tailscale owner.
+- Spell it out instead with `--listen <ip>:8787 --trust-tailnet --allow <login>`
+  (repeat `--allow` for more people, `--allow-any` for any tailnet peer). Drop
+  `--trust-tailnet` for a pairing-code flow.
 
 It mints credentials, registers a **logon-autostart** task in your interactive
 session (so screenshots / UI automation work), starts it now, and prints a
@@ -105,5 +108,8 @@ as tools. Long builds stream back as progress.
   session precisely so these work.
 - **No port forwarding.** With Tailscale, the runner binds its tailnet IP and the
   Mac dials it directly — gate access with Tailscale ACLs.
-- **Updating the runner:** `winget upgrade agent-rt.arc-runner` (or re-download
-  the release binary and re-run `arc-runner install --repair`).
+- **Updating the runner:** `arc-runner upgrade` (downloads the latest release,
+  validates it, swaps the binary, restarts the task) or `winget upgrade
+  agent-rt.arc-runner`. Run `arc-runner upgrade` on the box (ssh/console) or via
+  a *different* runner — not through the runner being upgraded, since the restart
+  stops its task. `--dry-run` downloads + validates without swapping.

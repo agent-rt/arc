@@ -50,6 +50,11 @@ async fn main() -> Result<(), BoxError> {
         Some("pair") => return run_pair(&args[1..]),
         Some("install") => return run_install(&args[1..]),
         Some("uninstall") => return run_uninstall(),
+        Some("upgrade") => return run_upgrade(&args[1..]),
+        Some("--version" | "-V" | "version") => {
+            println!("arc-runner {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -138,13 +143,23 @@ fn run_pair(args: &[String]) -> Result<(), BoxError> {
 /// The logon-autostart scheduled task name created by `install`.
 const TASK_NAME: &str = "arc-runner";
 
-/// `arc-runner install [--listen <addr> | --relay <url>] [--trust-tailnet]
-/// [--allow <login>]... [--repair]`: pair (mint + persist credentials on first
-/// run), register a logon-autostart scheduled task in the interactive session
-/// (so screenshots / UI Automation work), start it, and print the controller
-/// target. Replaces the old `install.ps1`.
+/// Default direct-mode port (`--tailscale` listens here unless `--port` overrides).
+const DEFAULT_PORT: u16 = 8787;
+
+/// `arc-runner install [--tailscale [--port <n>] [--allow-any]] [--listen <addr>
+/// | --relay <url>] [--trust-tailnet] [--allow <login>]... [--repair]`: pair
+/// (mint + persist credentials on first run), register a logon-autostart
+/// scheduled task in the interactive session (so screenshots / UI Automation
+/// work), start it, and print the controller target.
+///
+/// `--tailscale` is the one-flag common case: it reads this node's tailnet IP
+/// (`tailscale ip -4`), listens on `<ip>:8787`, turns on trusted-identity
+/// auth, and restricts access to the node's own Tailscale owner — equivalent to
+/// `--listen <ip>:8787 --trust-tailnet --allow <owner>`, all auto-detected.
 fn run_install(args: &[String]) -> Result<(), BoxError> {
     let (mut listen, mut relay, mut trust, mut repair) = (None, None, false, false);
+    let (mut tailscale_mode, mut allow_any, mut dry_run) = (false, false, false);
+    let mut port: u16 = DEFAULT_PORT;
     let mut allow: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -152,21 +167,80 @@ fn run_install(args: &[String]) -> Result<(), BoxError> {
             "--listen" => listen = it.next().cloned(),
             "--relay" => relay = it.next().cloned(),
             "--trust-tailnet" => trust = true,
+            "--tailscale" => tailscale_mode = true,
+            "--port" => {
+                port = it
+                    .next()
+                    .and_then(|p| p.parse().ok())
+                    .ok_or("--port needs a port number")?;
+            }
             "--allow" => {
                 if let Some(login) = it.next() {
                     allow.push(login.clone());
                 }
             }
+            "--allow-any" => allow_any = true,
             "--repair" => repair = true,
+            "--dry-run" => dry_run = true,
             other => return Err(format!("unknown `install` argument: {other}").into()),
         }
     }
+
+    // `--tailscale`: derive the direct-mode listen address + trusted identity
+    // from the local Tailscale node, so the common case is a single flag.
+    if tailscale_mode {
+        if relay.is_some() {
+            return Err("--tailscale is direct mode (no relay); drop --relay".into());
+        }
+        trust = true;
+        if listen.is_none() {
+            let ip = tailscale_ip().ok_or(
+                "could not read this node's Tailscale IP (`tailscale ip -4`); is Tailscale up?",
+            )?;
+            listen = Some(format!("{ip}:{port}"));
+        }
+        if allow.is_empty() && !allow_any {
+            let owner = tailscale_owner_login().ok_or(
+                "could not detect this node's Tailscale owner (`tailscale status --json`); \
+                 pass --allow <login> or --allow-any",
+            )?;
+            println!(
+                "Restricting access to this node's Tailscale owner: {owner}\n  \
+                 (--allow <login> to add others; --allow-any for any tailnet peer)\n"
+            );
+            allow.push(owner);
+        }
+    }
+
     if listen.is_none() && relay.is_none() {
-        return Err("pass --listen <host:port> (direct) or --relay <ws-url>".into());
+        return Err(
+            "pass --tailscale, or --listen <host:port> (direct), or --relay <ws-url>".into(),
+        );
     }
 
     let exe = std::env::current_exe()?;
     let cfg_path = cfg::path().ok_or("no config directory")?;
+
+    if dry_run {
+        println!("install --dry-run (no changes made):");
+        match (&listen, &relay) {
+            (Some(addr), _) => println!("  mode    : direct, listen {addr}"),
+            (None, Some(url)) => println!("  mode    : relay {url}"),
+            _ => {}
+        }
+        println!("  trust   : {trust}");
+        println!(
+            "  allow   : {}",
+            if allow.is_empty() {
+                "<any tailnet peer>".to_owned()
+            } else {
+                allow.join(", ")
+            }
+        );
+        println!("  task    : would register '{TASK_NAME}' running {}", exe.display());
+        println!("  config  : {}", cfg_path.display());
+        return Ok(());
+    }
 
     // Mint credentials on first install (or --repair); otherwise keep them.
     let (session, pairing) = if repair || !cfg_path.exists() {
@@ -243,6 +317,129 @@ fn run_uninstall() -> Result<(), BoxError> {
         println!("No scheduled task '{TASK_NAME}' to remove.");
     }
     Ok(())
+}
+
+/// `arc-runner upgrade [--version <vX.Y.Z>]`: download the release
+/// `arc-runner.exe` (latest by default), validate it, swap it in beside the
+/// running binary, and restart the scheduled task.
+///
+/// Run this **on the box** (ssh / console) or via a *different* runner — not
+/// through the runner being upgraded: the restart stops the `arc-runner` task,
+/// the same self-kill rule as `taskkill` / `schtasks /end` on yourself.
+fn run_upgrade(args: &[String]) -> Result<(), BoxError> {
+    let mut version = None;
+    let mut dry_run = false;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--version" => version = it.next().cloned(),
+            "--dry-run" => dry_run = true,
+            other => return Err(format!("unknown `upgrade` argument: {other}").into()),
+        }
+    }
+    let url = match &version {
+        Some(v) => format!("https://github.com/agent-rt/arc/releases/download/{v}/arc-runner.exe"),
+        None => "https://github.com/agent-rt/arc/releases/latest/download/arc-runner.exe".to_owned(),
+    };
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().ok_or("current exe has no parent directory")?;
+    let new = dir.join("arc-runner.exe.new");
+    let bak = dir.join("arc-runner.exe.bak");
+
+    // Download with PowerShell — always present on Windows, so no HTTP dep.
+    println!("Downloading {url}");
+    let status = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{}'",
+                new.display()
+            ),
+        ])
+        .status()?;
+    if !status.success() {
+        return Err("download failed".into());
+    }
+
+    // Validate without executing (an old build would hang in serve mode): a real
+    // PE binary starts with "MZ" and the release exe is tens of MB.
+    let len = std::fs::metadata(&new)?.len();
+    let mut magic = [0u8; 2];
+    {
+        use std::io::Read;
+        std::fs::File::open(&new)?.read_exact(&mut magic)?;
+    }
+    if &magic != b"MZ" || len < 1_000_000 {
+        let _ = std::fs::remove_file(&new);
+        return Err(format!("downloaded file is not a valid exe (size {len}); aborting").into());
+    }
+
+    if dry_run {
+        let _ = std::fs::remove_file(&new);
+        println!("upgrade --dry-run: downloaded + validated {len} bytes (valid exe); would swap and restart '{TASK_NAME}'. No changes made.");
+        return Ok(());
+    }
+
+    // Stop the task to release its lock, then swap (renaming a running exe is
+    // allowed on Windows even though overwriting it in place is not) and restart.
+    let _ = std::process::Command::new("schtasks")
+        .args(["/end", "/tn", TASK_NAME])
+        .status();
+    std::thread::sleep(Duration::from_secs(3));
+    let _ = std::fs::remove_file(&bak);
+    std::fs::rename(&exe, &bak).map_err(|e| format!("moving old binary aside: {e}"))?;
+    if let Err(e) = std::fs::rename(&new, &exe) {
+        let _ = std::fs::rename(&bak, &exe); // roll back
+        return Err(format!("installing new binary: {e}").into());
+    }
+    let _ = std::fs::remove_file(&bak); // best effort (may still be mapped)
+
+    std::process::Command::new("schtasks")
+        .args(["/run", "/tn", TASK_NAME])
+        .status()?;
+    println!("Upgraded arc-runner ({len} bytes) and restarted task '{TASK_NAME}'.");
+    Ok(())
+}
+
+/// Runs the Tailscale CLI with `args`, trying `PATH` then the default install
+/// dir (the task environment often lacks Tailscale's dir on `PATH`), returning
+/// stdout on success. Mirrors [`whois_login`]'s lookup, synchronously.
+fn tailscale(args: &[&str]) -> Option<String> {
+    let mut candidates = vec!["tailscale".to_owned()];
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        candidates.push(format!("{program_files}\\Tailscale\\tailscale.exe"));
+    }
+    for program in candidates {
+        if let Ok(output) = std::process::Command::new(&program).args(args).output()
+            && output.status.success()
+        {
+            return Some(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+    }
+    None
+}
+
+/// This node's Tailscale IPv4 (`tailscale ip -4`, first line).
+fn tailscale_ip() -> Option<String> {
+    tailscale(&["ip", "-4"])?
+        .lines()
+        .next()
+        .map(|l| l.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+/// The login that owns this node, from `tailscale status --json`
+/// (`.Self.UserID` → `.User[<id>].LoginName`).
+fn tailscale_owner_login() -> Option<String> {
+    let json = tailscale(&["status", "--json"])?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let uid = value["Self"]["UserID"].as_u64()?;
+    value["User"]
+        .get(uid.to_string())?
+        .get("LoginName")?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// Prints the ready-to-paste `[targets.win]` block for the controller config.

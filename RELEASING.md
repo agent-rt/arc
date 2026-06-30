@@ -69,12 +69,14 @@ The formula prints a caveat reminding you to set up the Windows runner
 `agent-rt.arc-runner` portable manifest to winget-pkgs on each release. Then:
 ```powershell
 winget install agent-rt.arc-runner
-arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
+arc-runner install --tailscale
 ```
-`arc-runner install` mints credentials, registers a logon-autostart task
-(interactive session, so GUI/UIA work), starts it, and prints the controller
-`[targets.win]` block for `~/.config/arc/config.toml`. `arc-runner uninstall`
-removes it.
+`arc-runner install --tailscale` auto-detects the tailnet IP + owner (or spell it
+out: `--listen <ip>:8787 --trust-tailnet --allow <login>`), mints credentials,
+registers a logon-autostart task (interactive session, so GUI/UIA work), starts
+it, and prints the controller `[targets.win]` block for
+`~/.config/arc/config.toml`. `arc-runner uninstall` removes it; `arc-runner
+upgrade` self-updates to the latest release.
 
 ### Extra one-time setup
 

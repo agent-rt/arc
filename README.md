@@ -30,13 +30,18 @@ winget install agent-rt.arc-runner
 
 Over Tailscale (recommended — no relay, no pairing code to copy):
 
-1. On the **Windows** runner, register it (autostarts at logon):
+1. On the **Windows** runner, register it (autostarts at logon). On Tailscale
+   it's one flag — `--tailscale` auto-detects the tailnet IP and restricts
+   access to this machine's Tailscale owner:
 
    ```powershell
-   arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
+   arc-runner install --tailscale
    ```
 
-   This mints credentials and prints a ready-to-paste `[targets.win]` block.
+   (Equivalent to `--listen <tailnet-ip>:8787 --trust-tailnet --allow <owner>`,
+   still passable explicitly; `--allow-any` permits any tailnet peer, `--port`
+   changes the port, `--dry-run` previews.) It mints credentials and prints a
+   ready-to-paste `[targets.win]` block.
 
 2. On the **controller**, drop that block into `~/.config/arc/config.toml`:
 
@@ -54,8 +59,9 @@ Over Tailscale (recommended — no relay, no pairing code to copy):
    arc -t win shell --cmd 'ver'
    ```
 
-`arc-runner uninstall` removes the task. For relay mode instead of Tailscale,
-use `arc-runner install --relay <ws-url>`.
+`arc-runner uninstall` removes the task; `arc-runner upgrade` self-updates it to
+the latest release (download → validate → swap → restart). For relay mode
+instead of Tailscale, use `arc-runner install --relay <ws-url>`.
 
 > Coming from `ssh` + `scp`? See **[docs/from-ssh.md](docs/from-ssh.md)** for a
 > side-by-side migration of the common workflow.
