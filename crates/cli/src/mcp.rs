@@ -161,6 +161,13 @@ pub struct PressKeyArgs {
     pub keys: Vec<String>,
 }
 
+/// Arguments for [`AgentRc::clipboard_set`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipboardSetArgs {
+    /// Text to place on the remote clipboard.
+    pub text: String,
+}
+
 /// Arguments for [`AgentRc::mouse`].
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MouseArgs {
@@ -602,6 +609,22 @@ impl AgentRc {
             value: args.value,
         })
         .await
+    }
+
+    #[tool(description = "Read the remote machine's clipboard as text.")]
+    async fn clipboard_get(&self) -> Result<CallToolResult, McpError> {
+        match self.dispatch(Command::ClipboardGet).await? {
+            Reply::Text(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    #[tool(description = "Replace the remote machine's clipboard with the given text.")]
+    async fn clipboard_set(
+        &self,
+        Parameters(args): Parameters<ClipboardSetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ack(Command::ClipboardSet { text: args.text }).await
     }
 
     #[tool(description = "Launch an application on the remote machine by path or name.")]

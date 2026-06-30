@@ -264,6 +264,20 @@ enum Cmd {
     },
     /// Set a UI element's value directly.
     Set { element_id: String, value: String },
+    /// Read or write the remote clipboard.
+    Clip {
+        #[command(subcommand)]
+        action: ClipCmd,
+    },
+}
+
+/// Clipboard sub-actions for `arc clip`.
+#[derive(Subcommand)]
+enum ClipCmd {
+    /// Print the remote clipboard's text to stdout.
+    Get,
+    /// Set the remote clipboard. Pass text, or `-` to read it from stdin.
+    Set { text: String },
 }
 
 /// Mouse sub-actions for `arc mouse` (coordinates are virtual-desktop pixels).
@@ -535,8 +549,33 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await?;
         }
+        Cmd::Clip { action } => clip(&mut controller, action).await?,
     }
     Ok(0)
+}
+
+/// Reads or writes the remote clipboard.
+async fn clip(controller: &mut Controller, action: ClipCmd) -> Result<()> {
+    match action {
+        ClipCmd::Get => match controller.request(Command::ClipboardGet).await? {
+            Reply::Text(text) => {
+                print!("{text}");
+                Ok(())
+            }
+            other => bail!("expected text, got {other:?}"),
+        },
+        ClipCmd::Set { text } => {
+            // `-` means read the clipboard contents from stdin.
+            let text = if text == "-" {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                buf
+            } else {
+                text
+            };
+            ack(controller, Command::ClipboardSet { text }).await
+        }
+    }
 }
 
 /// Runs the MCP server over stdio (everything but the protocol goes to stderr,

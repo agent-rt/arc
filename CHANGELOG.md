@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`arc clip get` / `arc clip set`** — read or write the remote machine's
+  clipboard. `clip set -` reads the text from stdin. Useful for moving text both
+  ways without typing it character-by-character, and for reading what an app
+  copied. MCP gains `clipboard_get` / `clipboard_set`. (Verified round-trip incl.
+  CJK, and reading text another app placed on the clipboard.)
 - **`arc type --into <element-id>`** — focus a specific control (UIA `SetFocus`,
   id from `elements`/`find`) before typing, then send real keystrokes. More
   reliable than typing into whatever happens to have focus, and (unlike

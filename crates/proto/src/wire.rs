@@ -224,6 +224,14 @@ pub enum Command {
         /// What the mouse should do.
         action: MouseAction,
     },
+    /// Read the runner's clipboard as text (returns [`Reply::Text`]; empty if
+    /// the clipboard holds no text).
+    ClipboardGet,
+    /// Replace the runner's clipboard with the given text.
+    ClipboardSet {
+        /// Text to place on the clipboard.
+        text: String,
+    },
 }
 
 /// Interpreter selection for [`Command::RunCommand`].
@@ -496,6 +504,8 @@ pub enum Reply {
     FileHashes(Vec<FileHash>),
     /// Relative file paths under a root, from [`Command::ListTree`].
     Tree(Vec<String>),
+    /// A text payload (e.g. from [`Command::ClipboardGet`]).
+    Text(String),
     /// Acknowledgement for commands with no return payload.
     Ack,
 }

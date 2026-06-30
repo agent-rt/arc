@@ -11,7 +11,7 @@ use arc_proto::wire::{
 };
 use tokio::sync::mpsc;
 
-use crate::{apps, capture, exec, files, input, uia};
+use crate::{apps, capture, clipboard, exec, files, input, uia};
 
 /// Result alias for per-command handlers: success [`Reply`] or structured
 /// [`RemoteError`] returned to the controller.
@@ -96,6 +96,10 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             blocking(move || input::key_chord(&modifiers, key)).await
         }
         Command::Mouse { action } => blocking(move || input::mouse(action)).await,
+        Command::ClipboardGet => blocking(|| clipboard::get().map(Reply::Text)).await,
+        Command::ClipboardSet { text } => {
+            blocking(move || clipboard::set(&text).map(|()| Reply::Ack)).await
+        }
         Command::SetValue { element, value } => {
             blocking(move || uia::set_value(&element.0, &value)).await
         }

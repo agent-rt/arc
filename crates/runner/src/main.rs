@@ -15,6 +15,7 @@
 mod apps;
 mod capture;
 mod cfg;
+mod clipboard;
 mod dispatch;
 mod exec;
 mod files;
