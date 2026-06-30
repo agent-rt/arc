@@ -1,0 +1,17 @@
+[package]
+name = "arc-proto"
+description = "Wire protocol, framing and end-to-end crypto for arc remote control."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+snow.workspace = true
+blake2.workspace = true
+spake2.workspace = true
+getrandom = "0.2"

@@ -1,0 +1,8 @@
+# cargo-release config. We do NOT publish to crates.io — release is just a
+# synchronized version bump + a single `vX.Y.Z` tag, which the GitHub Actions
+# release workflow turns into binaries + Homebrew/winget artifacts.
+publish = false
+shared-version = true
+consolidate-commits = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "release {{version}}"

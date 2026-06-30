@@ -1,0 +1,21 @@
+[package]
+name = "arc-relay"
+description = "Zero-knowledge WebSocket relay that forwards opaque ciphertext between arc peers."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "arc-relay"
+path = "src/main.rs"
+
+[dependencies]
+arc-proto.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

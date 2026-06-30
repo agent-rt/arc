@@ -1,0 +1,31 @@
+[package]
+name = "arc-cli"
+description = "arc — an adb-style CLI for arc: shell, push/pull, screencap, UI control over the relay."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "arc"
+path = "src/main.rs"
+
+[dependencies]
+arc-proto.workspace = true
+arc-net.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+blake2.workspace = true
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+notify = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# MCP server mode (`arc --mcp`)
+tracing.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde_json = "1"
+base64.workspace = true

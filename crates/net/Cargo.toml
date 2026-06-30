@@ -1,0 +1,16 @@
+[package]
+name = "arc-net"
+description = "Shared client transport for arc: relay WebSocket + Noise session with framed L2 exchange."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arc-proto.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

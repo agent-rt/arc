@@ -1,0 +1,198 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAP_REPO: agent-rt/homebrew-tap
+
+jobs:
+  # macOS / Linux controller binaries (arc) → Homebrew tap.
+  # arc-runner is NOT built here — it is Windows-only (xcap / windows-rs).
+  build:
+    name: Build & publish (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"    >> "$GITHUB_OUTPUT"
+          echo "rel_tag=arc-${TAG}"  >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build arc
+        run: cargo build --release --locked --target ${{ matrix.target }} -p arc-cli
+
+      - name: Package tarball
+        id: pkg
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.tag.outputs.version }}"
+          NAME="arc-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${NAME}"
+          cp "target/${{ matrix.target }}/release/arc" "dist/${NAME}/"
+          cp README.md "dist/${NAME}/"
+          cd dist
+          tar -czf "${NAME}.tar.gz" "${NAME}"
+          shasum -a 256 "${NAME}.tar.gz" | tee "${NAME}.tar.gz.sha256"
+          echo "tarball=dist/${NAME}.tar.gz"        >> "$GITHUB_OUTPUT"
+          echo "shafile=dist/${NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to arc release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.shafile }}
+          generate_release_notes: true
+
+      - name: Publish to tap release
+        env:
+          GH_TOKEN: ${{ secrets.GH_DIST_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.rel_tag }}" \
+            --repo "${{ env.TAP_REPO }}" --title "arc ${{ steps.tag.outputs.tag }}" \
+            --notes "arc ${{ steps.tag.outputs.tag }}" --prerelease \
+            "${{ steps.pkg.outputs.tarball }}" "${{ steps.pkg.outputs.shafile }}" \
+            || gh release upload "${{ steps.tag.outputs.rel_tag }}" \
+               --repo "${{ env.TAP_REPO }}" --clobber \
+               "${{ steps.pkg.outputs.tarball }}" "${{ steps.pkg.outputs.shafile }}"
+
+  # Windows runner (arc-runner) + controller (arc) → winget / portable.
+  windows:
+    name: Build & publish (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+      - name: Build arc-runner + arc
+        run: cargo build --release --locked -p arc-runner -p arc-cli
+      - name: Package zip
+        id: pkg
+        shell: pwsh
+        run: |
+          $name = "arc-$('${{ steps.tag.outputs.version }}')-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item target/release/arc-runner.exe,target/release/arc.exe "dist/$name/"
+          Copy-Item README.md "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          $sha = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$sha  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+          "tarball=dist/$name.zip"        | Out-File -Append $env:GITHUB_OUTPUT
+          "shafile=dist/$name.zip.sha256" | Out-File -Append $env:GITHUB_OUTPUT
+      - name: Publish to arc release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.shafile }}
+
+  # Generate/refresh the Homebrew formula in the tap (installs arc).
+  update-formula:
+    name: Update Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF#refs/tags/}"
+          echo "version=${TAG#v}"   >> "$GITHUB_OUTPUT"
+          echo "rel_tag=arc-${TAG}" >> "$GITHUB_OUTPUT"
+      - name: Fetch SHA256s from tap release
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GH_DIST_TOKEN }}
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          gh release download "${{ steps.tag.outputs.rel_tag }}" \
+            --repo "${{ env.TAP_REPO }}" --pattern "*apple-darwin.tar.gz.sha256" --dir dist
+          echo "arm=$(awk '{print $1}' dist/arc-${VERSION}-aarch64-apple-darwin.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
+          echo "x86=$(awk '{print $1}' dist/arc-${VERSION}-x86_64-apple-darwin.tar.gz.sha256)"  >> "$GITHUB_OUTPUT"
+      - name: Commit formula
+        env:
+          GH_TOKEN: ${{ secrets.GH_DIST_TOKEN }}
+        run: |
+          set -eu
+          VERSION="${{ steps.tag.outputs.version }}"
+          BASE="https://github.com/${{ env.TAP_REPO }}/releases/download/${{ steps.tag.outputs.rel_tag }}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ env.TAP_REPO }}.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/arc.rb <<FORMULA
+          class Arc < Formula
+            desc "Remote control for Agents — drive another machine over an encrypted relay"
+            homepage "https://github.com/agent-rt/arc"
+            version "${VERSION}"
+            license "MIT OR Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "${BASE}/arc-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.sha.outputs.arm }}"
+              end
+              on_intel do
+                url "${BASE}/arc-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.sha.outputs.x86 }}"
+              end
+            end
+
+            def install
+              bin.install "arc"
+            end
+
+            test do
+              assert_match "arc", shell_output("#{bin}/arc --version")
+            end
+          end
+          FORMULA
+          cd tap
+          git config user.name  "agent-rt-bot"
+          git config user.email "agent-rt-bot@users.noreply.github.com"
+          git add Formula/arc.rb
+          git commit -m "arc ${VERSION}" || { echo "formula unchanged"; exit 0; }
+          git push origin HEAD:main
