@@ -19,6 +19,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 blake2.workspace = true
 clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 ignore = "0.4"
 notify = "6"
 serde = { version = "1", features = ["derive"] }

@@ -167,6 +167,16 @@ enum Cmd {
         /// Capture only this element (id from `elements`/`find`) — its bounding box.
         #[arg(long)]
         element: Option<String>,
+        /// Compare the capture against this baseline image and report how much
+        /// changed. Exits non-zero if the change exceeds `--threshold`.
+        #[arg(long)]
+        baseline: Option<String>,
+        /// With `--baseline`, write a diff image here highlighting changed pixels.
+        #[arg(long)]
+        diff: Option<String>,
+        /// Percent of pixels that may differ before it counts as a regression.
+        #[arg(long, default_value_t = 0.1)]
+        threshold: f64,
     },
     /// One-shot "verify the UI": optionally launch an app, find its window, wait
     /// for it to render (two stable frames), and screenshot it. Replaces the
@@ -492,7 +502,21 @@ async fn run(cli: Cli) -> Result<i32> {
             out,
             window,
             element,
-        } => screencap(&mut controller, &out, window, element).await?,
+            baseline,
+            diff,
+            threshold,
+        } => {
+            return screencap(
+                &mut controller,
+                &out,
+                window,
+                element,
+                baseline.as_deref(),
+                diff.as_deref(),
+                threshold,
+            )
+            .await;
+        }
         Cmd::Shot {
             out,
             app,
@@ -1373,12 +1397,16 @@ async fn cat(controller: &mut Controller, remote: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn screencap(
     controller: &mut Controller,
     out: &str,
     window: Option<u64>,
     element: Option<String>,
-) -> Result<()> {
+    baseline: Option<&str>,
+    diff: Option<&str>,
+    threshold: f64,
+) -> Result<i32> {
     let target = if let Some(id) = element {
         CaptureTarget::Element(ElementId(id))
     } else if let Some(handle) = window {
@@ -1396,7 +1424,7 @@ async fn screencap(
     } else {
         None
     };
-    match controller
+    let image = match controller
         .request(Command::Screenshot {
             target,
             format,
@@ -1405,18 +1433,89 @@ async fn screencap(
         })
         .await?
     {
-        Reply::Image(image) => {
-            std::fs::write(out, &image.data).with_context(|| format!("writing {out}"))?;
-            println!(
-                "saved {out} ({}x{}, {:?}, {} bytes)",
-                image.width,
-                image.height,
-                image.format,
-                image.data.len()
-            );
-            Ok(())
-        }
+        Reply::Image(image) => image,
         other => bail!("unexpected reply: {other:?}"),
+    };
+    std::fs::write(out, &image.data).with_context(|| format!("writing {out}"))?;
+    println!(
+        "saved {out} ({}x{}, {:?}, {} bytes)",
+        image.width,
+        image.height,
+        image.format,
+        image.data.len()
+    );
+
+    if let Some(baseline) = baseline {
+        return compare_baseline(&image.data, baseline, diff, threshold);
+    }
+    Ok(0)
+}
+
+/// Compares freshly-captured image bytes against a baseline file, prints a
+/// verdict, optionally writes a highlighted diff, and returns a non-zero exit
+/// code if more than `threshold` percent of pixels changed — so it slots into a
+/// regression check. Differing dimensions count as a full (100%) change.
+fn compare_baseline(
+    captured: &[u8],
+    baseline_path: &str,
+    diff_path: Option<&str>,
+    threshold: f64,
+) -> Result<i32> {
+    let new = image::load_from_memory(captured)
+        .context("decoding the captured image")?
+        .to_rgba8();
+    let base = image::open(baseline_path)
+        .with_context(|| format!("opening baseline {baseline_path}"))?
+        .to_rgba8();
+
+    if new.dimensions() != base.dimensions() {
+        println!(
+            "DIFFERS: size {}x{} vs baseline {}x{}",
+            new.width(),
+            new.height(),
+            base.width(),
+            base.height()
+        );
+        return Ok(2);
+    }
+
+    // A pixel "changed" if any channel differs by more than a small tolerance
+    // (so lossy-codec noise doesn't read as a regression).
+    const TOL: u8 = 16;
+    let mut changed = 0u64;
+    let (n, b) = (new.as_raw(), base.as_raw());
+    let mut diff_img = diff_path.map(|_| new.clone());
+    for i in (0..n.len()).step_by(4) {
+        let differs = (0..3).any(|c| n[i + c].abs_diff(b[i + c]) > TOL);
+        if differs {
+            changed += 1;
+            if let Some(img) = diff_img.as_mut() {
+                // Paint changed pixels magenta in the diff overlay.
+                let px =
+                    img.get_pixel_mut((i as u32 / 4) % new.width(), (i as u32 / 4) / new.width());
+                *px = image::Rgba([255, 0, 255, 255]);
+            }
+        }
+    }
+    let total = (new.width() as u64) * (new.height() as u64);
+    let pct = if total == 0 {
+        0.0
+    } else {
+        changed as f64 * 100.0 / total as f64
+    };
+
+    if let (Some(path), Some(img)) = (diff_path, diff_img) {
+        img.save(path)
+            .with_context(|| format!("writing diff {path}"))?;
+        println!("diff image: {path}");
+    }
+
+    if pct > threshold {
+        println!("DIFFERS: {pct:.3}% of pixels changed (> {threshold}% threshold)");
+        Ok(2)
+    } else {
+        println!("MATCH: {pct:.3}% of pixels changed (≤ {threshold}% threshold)");
+        Ok(0)
     }
 }
 

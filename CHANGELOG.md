@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`arc screencap --baseline <img>`** — compare the capture against a baseline
+  and print a verdict (`MATCH` / `DIFFERS: N% of pixels changed`), exiting
+  non-zero past `--threshold` (default 0.1%) so it drops into a regression gate.
+  `--diff <img>` writes an overlay with changed pixels painted magenta.
+  Dimension mismatches count as a full change.
 - **`arc watch … --on-change '<cmd>'`** — after each auto-sync (and once at
   startup), run a PowerShell command on the runner with live output, e.g.
   `arc watch ./src C:/work/src --on-change 'cargo build'`. Closes the

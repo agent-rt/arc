@@ -136,6 +136,7 @@ dependencies = [
  "blake2",
  "clap",
  "ignore",
+ "image",
  "notify",
  "rmcp",
  "schemars",
