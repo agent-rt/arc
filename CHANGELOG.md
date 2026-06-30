@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`--json` on `windows` / `elements` / `find` / `wait`** — structured output
+  instead of pipe-delimited text, so agents stop scraping with `cut`/`grep`.
+  Window records carry `id, title, process, focused, rect`; element records carry
+  `id, control_type, name, automation_id, value, rect, actionable`. Elements now
+  also include their **bounding `rect`** and current **`value`** (Value-pattern
+  controls) in the text output too.
+
 ## 0.5.0
 
 - **`arc-runner keep-display`** — keeps a remote machine composing across RDP

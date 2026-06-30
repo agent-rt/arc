@@ -1,6 +1,8 @@
 //! Launching applications and enumerating top-level windows.
 
 use arc_proto::id::WindowId;
+#[cfg(windows)]
+use arc_proto::wire::Rect;
 use arc_proto::wire::{Reply, WindowInfo};
 
 use crate::dispatch::{RemoteResult, os_error};
@@ -58,10 +60,30 @@ pub fn list_windows() -> RemoteResult<Reply> {
                 title,
                 process: process_name(h),
                 focused: h == foreground,
+                rect: window_rect(h),
             })
         })
         .collect();
     Ok(Reply::Windows(infos))
+}
+
+/// Reads a window's screen rectangle.
+#[cfg(windows)]
+fn window_rect(hwnd: windows::Win32::Foundation::HWND) -> Rect {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = RECT::default();
+    // SAFETY: `hwnd` is live for this call; GetWindowRect errors on a stale handle.
+    if unsafe { GetWindowRect(hwnd, &mut r) }.is_ok() {
+        Rect {
+            x: r.left,
+            y: r.top,
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+        }
+    } else {
+        Rect::default()
+    }
 }
 
 /// Reads a window's title text.

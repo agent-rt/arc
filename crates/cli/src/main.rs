@@ -143,10 +143,21 @@ enum Cmd {
         #[arg(long)]
         window: Option<u64>,
     },
-    /// List top-level windows (`handle | process | title`).
-    Windows,
-    /// List a window's UI Automation elements.
-    Elements { window: u64 },
+    /// List top-level windows. Text is `handle | process | title`; `--json` emits
+    /// structured records (handle, title, process, focused, rect).
+    Windows {
+        /// Emit JSON instead of pipe-delimited text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List a window's UI Automation elements. `--json` emits structured records
+    /// (id, control_type, name, automation_id, value, rect, actionable).
+    Elements {
+        window: u64,
+        /// Emit JSON instead of pipe-delimited text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Find elements in a window by attribute (no full-tree dump). Prints the
     /// matches as `id | control_type | actionable? | automation_id | name`.
     Find {
@@ -167,6 +178,9 @@ enum Cmd {
         /// Only enabled, on-screen elements.
         #[arg(long)]
         actionable: bool,
+        /// Emit JSON instead of pipe-delimited text.
+        #[arg(long)]
+        json: bool,
     },
     /// Wait until an element matching the query appears (polls the runner), then
     /// print it. Exits non-zero on timeout. Same filters as `find`.
@@ -186,6 +200,9 @@ enum Cmd {
         /// Give up after this many seconds.
         #[arg(long, default_value_t = 10)]
         timeout: u64,
+        /// Emit JSON instead of pipe-delimited text.
+        #[arg(long)]
+        json: bool,
     },
     /// Launch an application by path or name. Arguments after it (including
     /// `--flags`) pass through to the app: `arc open notepad C:\x.txt`,
@@ -392,8 +409,8 @@ async fn run(cli: Cli) -> Result<i32> {
         } => pull(&mut controller, &remote, &local, delete, dry_run, whole).await?,
         Cmd::Watch { local, remote } => watch(&mut controller, &local, &remote).await?,
         Cmd::Screencap { out, window } => screencap(&mut controller, &out, window).await?,
-        Cmd::Windows => windows(&mut controller).await?,
-        Cmd::Elements { window } => elements(&mut controller, window).await?,
+        Cmd::Windows { json } => windows(&mut controller, json).await?,
+        Cmd::Elements { window, json } => elements(&mut controller, window, json).await?,
         Cmd::Find {
             window,
             name,
@@ -401,6 +418,7 @@ async fn run(cli: Cli) -> Result<i32> {
             automation_id,
             control_type,
             actionable,
+            json,
         } => {
             let query = ElementQuery {
                 name,
@@ -409,7 +427,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 control_type,
                 actionable_only: actionable,
             };
-            return find_elements(&mut controller, window, query, None).await;
+            return find_elements(&mut controller, window, query, None, json).await;
         }
         Cmd::Wait {
             window,
@@ -419,6 +437,7 @@ async fn run(cli: Cli) -> Result<i32> {
             control_type,
             actionable,
             timeout,
+            json,
         } => {
             let query = ElementQuery {
                 name,
@@ -432,6 +451,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 window,
                 query,
                 Some(timeout.saturating_mul(1000)),
+                json,
             )
             .await;
         }
@@ -1164,11 +1184,15 @@ async fn screencap(controller: &mut Controller, out: &str, window: Option<u64>) 
     }
 }
 
-async fn windows(controller: &mut Controller) -> Result<()> {
+async fn windows(controller: &mut Controller, json: bool) -> Result<()> {
     match controller.request(Command::ListWindows).await? {
         Reply::Windows(windows) => {
-            for w in windows {
-                println!("{} | {} | {}", w.id.0, w.process, w.title);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&windows)?);
+            } else {
+                for w in &windows {
+                    println!("{} | {} | {}", w.id.0, w.process, w.title);
+                }
             }
             Ok(())
         }
@@ -1176,7 +1200,7 @@ async fn windows(controller: &mut Controller) -> Result<()> {
     }
 }
 
-async fn elements(controller: &mut Controller, window: u64) -> Result<()> {
+async fn elements(controller: &mut Controller, window: u64, json: bool) -> Result<()> {
     match controller
         .request(Command::ListElements {
             window: WindowId(window),
@@ -1184,9 +1208,7 @@ async fn elements(controller: &mut Controller, window: u64) -> Result<()> {
         .await?
     {
         Reply::Elements(elements) => {
-            for e in &elements {
-                print_element(e);
-            }
+            print_elements(&elements, json)?;
             Ok(())
         }
         other => bail!("unexpected reply: {other:?}"),
@@ -1201,6 +1223,7 @@ async fn find_elements(
     window: u64,
     query: ElementQuery,
     wait_ms: Option<u64>,
+    json: bool,
 ) -> Result<i32> {
     match controller
         .request(Command::FindElements {
@@ -1211,13 +1234,23 @@ async fn find_elements(
         .await?
     {
         Reply::Elements(elements) => {
-            for e in &elements {
-                print_element(e);
-            }
+            print_elements(&elements, json)?;
             Ok(0)
         }
         other => bail!("unexpected reply: {other:?}"),
     }
+}
+
+/// Prints elements as JSON or one pipe-delimited row each.
+fn print_elements(elements: &[ElementInfo], json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(elements)?);
+    } else {
+        for e in elements {
+            print_element(e);
+        }
+    }
+    Ok(())
 }
 
 /// Prints one element row: `id | control_type | actionable? | automation_id | name`.

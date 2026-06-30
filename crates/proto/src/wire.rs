@@ -510,6 +510,19 @@ pub enum ImageFormat {
     Png,
 }
 
+/// A screen rectangle in absolute coordinates (pixels).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rect {
+    /// Left edge.
+    pub x: i32,
+    /// Top edge.
+    pub y: i32,
+    /// Width.
+    pub width: i32,
+    /// Height.
+    pub height: i32,
+}
+
 /// Metadata for a top-level window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -521,6 +534,9 @@ pub struct WindowInfo {
     pub process: String,
     /// Whether the window is currently foreground.
     pub focused: bool,
+    /// Screen rectangle of the window.
+    #[serde(default)]
+    pub rect: Rect,
 }
 
 /// A node in a window's UI Automation tree.
@@ -535,6 +551,12 @@ pub struct ElementInfo {
     /// UIA AutomationId — the app-assigned stable identifier, if any.
     #[serde(default)]
     pub automation_id: Option<String>,
+    /// Current value (Value/RangeValue pattern), if the element exposes one.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Bounding rectangle on screen.
+    #[serde(default)]
+    pub rect: Rect,
     /// Whether the element is enabled and on-screen.
     pub actionable: bool,
 }

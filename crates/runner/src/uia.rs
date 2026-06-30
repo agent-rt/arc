@@ -56,7 +56,7 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use arc_proto::id::{ElementId, WindowId};
-    use arc_proto::wire::{ElementInfo, MouseButton, Reply};
+    use arc_proto::wire::{ElementInfo, MouseButton, Rect, Reply};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -325,6 +325,21 @@ mod imp {
         let offscreen = unsafe { element.CurrentIsOffscreen() }
             .map(|b| b.as_bool())
             .unwrap_or(true);
+        // Current value, if the element exposes a Value pattern (Edit, etc.).
+        let value =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
+                .ok()
+                .and_then(|p| unsafe { p.CurrentValue() }.ok())
+                .map(|b| b.to_string())
+                .filter(|s| !s.is_empty());
+        let rect = unsafe { element.CurrentBoundingRectangle() }
+            .map(|r| Rect {
+                x: r.left,
+                y: r.top,
+                width: r.right - r.left,
+                height: r.bottom - r.top,
+            })
+            .unwrap_or_default();
 
         let runtime_id = read_runtime_id(element);
 
@@ -333,6 +348,8 @@ mod imp {
             control_type,
             name,
             automation_id,
+            value,
+            rect,
             actionable: enabled && !offscreen,
         }
     }
