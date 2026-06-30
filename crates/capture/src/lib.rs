@@ -78,8 +78,7 @@ mod imp {
             Ok(image) => Ok(image),
             Err(primary) => match wgc::capture_window_region(hwnd) {
                 Ok(image) => Ok(image),
-                Err(_) => gdi::capture_window(hwnd)
-                    .map_err(|fallback| combined(primary, fallback)),
+                Err(_) => gdi::capture_window(hwnd).map_err(|fallback| combined(primary, fallback)),
             },
         }
     }

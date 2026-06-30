@@ -24,7 +24,9 @@ pub fn open_app(target: &str, args: &[String]) -> RemoteResult<Reply> {
 #[cfg(windows)]
 pub fn list_windows() -> RemoteResult<Reply> {
     use windows::Win32::Foundation::{HWND, LPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetForegroundWindow, IsWindowVisible};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetForegroundWindow, IsWindowVisible,
+    };
 
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
         // SAFETY: `lparam` carries the `&mut Vec<HWND>` we passed to EnumWindows.
@@ -118,13 +120,12 @@ fn process_name(hwnd: windows::Win32::Foundation::HWND) -> String {
         return String::new();
     }
     let path = String::from_utf16_lossy(&buffer[..size as usize]);
-    path.rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&path)
-        .to_owned()
+    path.rsplit(['\\', '/']).next().unwrap_or(&path).to_owned()
 }
 
 #[cfg(not(windows))]
 pub fn list_windows() -> RemoteResult<Reply> {
-    Err(os_error("window enumeration is only supported on Windows".to_owned()))
+    Err(os_error(
+        "window enumeration is only supported on Windows".to_owned(),
+    ))
 }

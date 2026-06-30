@@ -237,7 +237,10 @@ fn run_install(args: &[String]) -> Result<(), BoxError> {
                 allow.join(", ")
             }
         );
-        println!("  task    : would register '{TASK_NAME}' running {}", exe.display());
+        println!(
+            "  task    : would register '{TASK_NAME}' running {}",
+            exe.display()
+        );
         println!("  config  : {}", cfg_path.display());
         return Ok(());
     }
@@ -339,7 +342,9 @@ fn run_upgrade(args: &[String]) -> Result<(), BoxError> {
     }
     let url = match &version {
         Some(v) => format!("https://github.com/agent-rt/arc/releases/download/{v}/arc-runner.exe"),
-        None => "https://github.com/agent-rt/arc/releases/latest/download/arc-runner.exe".to_owned(),
+        None => {
+            "https://github.com/agent-rt/arc/releases/latest/download/arc-runner.exe".to_owned()
+        }
     };
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or("current exe has no parent directory")?;
@@ -377,7 +382,9 @@ fn run_upgrade(args: &[String]) -> Result<(), BoxError> {
 
     if dry_run {
         let _ = std::fs::remove_file(&new);
-        println!("upgrade --dry-run: downloaded + validated {len} bytes (valid exe); would swap and restart '{TASK_NAME}'. No changes made.");
+        println!(
+            "upgrade --dry-run: downloaded + validated {len} bytes (valid exe); would swap and restart '{TASK_NAME}'. No changes made."
+        );
         return Ok(());
     }
 

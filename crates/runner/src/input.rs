@@ -41,7 +41,11 @@ fn vk_event(vk: VIRTUAL_KEY, up: bool) -> INPUT {
             ki: KEYBDINPUT {
                 wVk: vk,
                 wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -57,7 +61,12 @@ fn unicode_event(unit: u16, up: bool) -> INPUT {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(0),
                 wScan: unit,
-                dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                dwFlags: KEYEVENTF_UNICODE
+                    | if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
                 time: 0,
                 dwExtraInfo: 0,
             },

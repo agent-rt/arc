@@ -493,7 +493,10 @@ impl AgentRc {
         Parameters(args): Parameters<PressKeyArgs>,
     ) -> Result<CallToolResult, McpError> {
         if args.keys.is_empty() {
-            return Err(McpError::invalid_params("keys must not be empty".to_owned(), None));
+            return Err(McpError::invalid_params(
+                "keys must not be empty".to_owned(),
+                None,
+            ));
         }
         let last = args.keys.len() - 1;
         for (i, chord) in args.keys.iter().enumerate() {
@@ -759,7 +762,11 @@ fn format_elements(elements: &[ElementInfo]) -> String {
                 "{} | {} | {} | {} | {}",
                 e.id.0,
                 e.control_type,
-                if e.actionable { "actionable" } else { "inactive" },
+                if e.actionable {
+                    "actionable"
+                } else {
+                    "inactive"
+                },
                 e.automation_id.as_deref().unwrap_or(""),
                 e.name.as_deref().unwrap_or(""),
             )

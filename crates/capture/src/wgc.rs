@@ -15,9 +15,9 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::{HMODULE, HWND, POINT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
     D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
@@ -80,8 +80,7 @@ pub fn capture_primary_monitor() -> Result<RgbaImage> {
     let monitor: HMONITOR =
         unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
     // SAFETY: `interop` is live; `monitor` is a valid HMONITOR.
-    let item: GraphicsCaptureItem =
-        unsafe { interop.CreateForMonitor(monitor) }.map_err(fail)?;
+    let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor) }.map_err(fail)?;
     capture_item(&item)
 }
 
@@ -132,25 +131,24 @@ fn capture_item(item: &GraphicsCaptureItem) -> Result<RgbaImage> {
     let _ = session.SetIsBorderRequired(false);
 
     let (tx, rx) = std::sync::mpsc::channel::<Direct3D11CaptureFrame>();
-    let handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
-        move |pool, _| {
+    let handler =
+        TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
             if let Some(pool) = pool.as_ref()
                 && let Ok(frame) = pool.TryGetNextFrame()
             {
                 let _ = tx.send(frame);
             }
             Ok(())
-        },
-    );
+        });
     let token = pool.FrameArrived(&handler).map_err(fail)?;
     session.StartCapture().map_err(fail)?;
 
     // The first frame often predates the app presenting its swap-chain content
     // (window chrome only, black client area). Wait for it, then keep the most
     // recent frame over a short settle window so composed content lands.
-    let mut frame = rx.recv_timeout(Duration::from_millis(1500)).map_err(|_| {
-        CaptureError::Failed("timed out waiting for a capture frame".to_owned())
-    })?;
+    let mut frame = rx
+        .recv_timeout(Duration::from_millis(1500))
+        .map_err(|_| CaptureError::Failed("timed out waiting for a capture frame".to_owned()))?;
     let settle = Instant::now() + Duration::from_millis(300);
     loop {
         let now = Instant::now();

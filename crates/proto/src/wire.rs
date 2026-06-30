@@ -575,7 +575,10 @@ impl ElementQuery {
             return false;
         }
         if let Some(aid) = &self.automation_id
-            && info.automation_id.as_deref().is_none_or(|v| !v.eq_ignore_ascii_case(aid))
+            && info
+                .automation_id
+                .as_deref()
+                .is_none_or(|v| !v.eq_ignore_ascii_case(aid))
         {
             return false;
         }
