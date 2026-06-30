@@ -374,6 +374,8 @@ impl AgentRc {
             .dispatch(Command::Screenshot {
                 target,
                 format: None,
+                settle_ms: None,
+                settle_await_change: false,
             })
             .await?;
         match reply {

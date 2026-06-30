@@ -16,8 +16,16 @@ use crate::dispatch::{RemoteResult, not_found, os_error};
 ///
 /// Prefers WebP (smaller over the relay and for the Agent's vision model);
 /// falls back to PNG if the WebP encoder rejects the frame.
-pub fn screenshot(target: CaptureTarget, format: Option<ImageFormat>) -> RemoteResult<Reply> {
-    let image = capture(target)?;
+pub fn screenshot(
+    target: CaptureTarget,
+    format: Option<ImageFormat>,
+    settle_ms: Option<u64>,
+    await_change: bool,
+) -> RemoteResult<Reply> {
+    let image = match settle_ms {
+        Some(ms) => capture_settled(target, ms, await_change)?,
+        None => capture(target)?,
+    };
     let (width, height) = (image.width(), image.height());
 
     let (format, data) = match format {
@@ -54,6 +62,54 @@ fn capture(target: CaptureTarget) -> RemoteResult<RgbaImage> {
             height,
         } => crop_monitor(x, y, width, height),
     }
+}
+
+/// Captures repeatedly until two consecutive frames are stable (or `timeout_ms`
+/// elapses), returning the latest — a reliable replacement for a blind
+/// "wait for the app to render" sleep after launching/opening a window.
+fn capture_settled(
+    target: CaptureTarget,
+    timeout_ms: u64,
+    await_change: bool,
+) -> RemoteResult<RgbaImage> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let first = capture(target.clone())?;
+    let mut prev = first.clone();
+    // When awaiting change (e.g. a just-launched window), don't accept stability
+    // until the frame has differed from the initial backdrop at least once.
+    let mut changed = !await_change;
+    loop {
+        if Instant::now() >= deadline {
+            return Ok(prev);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let next = capture(target.clone())?;
+        if !changed && !stable(&first, &next) {
+            changed = true;
+        }
+        if changed && stable(&prev, &next) {
+            return Ok(next);
+        }
+        prev = next;
+    }
+}
+
+/// Whether two frames are close enough to call the UI settled: same dimensions
+/// and fewer than ~0.3% of sampled bytes differ meaningfully.
+fn stable(a: &RgbaImage, b: &RgbaImage) -> bool {
+    if a.dimensions() != b.dimensions() {
+        return false;
+    }
+    let (a, b) = (a.as_raw(), b.as_raw());
+    let (mut differing, mut sampled) = (0usize, 0usize);
+    for i in (0..a.len()).step_by(16) {
+        sampled += 1;
+        if a[i].abs_diff(b[i]) > 8 {
+            differing += 1;
+        }
+    }
+    sampled == 0 || differing * 1000 / sampled < 3
 }
 
 /// Captures the primary monitor and crops to a screen rectangle.

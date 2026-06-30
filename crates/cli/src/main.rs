@@ -147,6 +147,25 @@ enum Cmd {
         #[arg(long)]
         element: Option<String>,
     },
+    /// One-shot "verify the UI": optionally launch an app, find its window, wait
+    /// for it to render (two stable frames), and screenshot it. Replaces the
+    /// open → blind-sleep → windows → grep → screencap dance.
+    Shot {
+        /// Output file (`.png` or `.webp`).
+        out: String,
+        /// Match a window by title/process substring (case-insensitive).
+        #[arg(long)]
+        app: Option<String>,
+        /// Capture this exact window handle (skip the search).
+        #[arg(long)]
+        window: Option<u64>,
+        /// Launch this executable first, then capture its window.
+        #[arg(long)]
+        launch: Option<String>,
+        /// Max seconds to wait for the window to appear and render.
+        #[arg(long, default_value_t = 15)]
+        wait: u64,
+    },
     /// List top-level windows. Text is `handle | process | title`; `--json` emits
     /// structured records (handle, title, process, focused, rect).
     Windows {
@@ -417,6 +436,13 @@ async fn run(cli: Cli) -> Result<i32> {
             window,
             element,
         } => screencap(&mut controller, &out, window, element).await?,
+        Cmd::Shot {
+            out,
+            app,
+            window,
+            launch,
+            wait,
+        } => shot(&mut controller, &out, app, window, launch, wait).await?,
         Cmd::Windows { json } => windows(&mut controller, json).await?,
         Cmd::Elements { window, json } => elements(&mut controller, window, json).await?,
         Cmd::Find {
@@ -1195,7 +1221,12 @@ async fn screencap(
         None
     };
     match controller
-        .request(Command::Screenshot { target, format })
+        .request(Command::Screenshot {
+            target,
+            format,
+            settle_ms: None,
+            settle_await_change: false,
+        })
         .await?
     {
         Reply::Image(image) => {
@@ -1210,6 +1241,115 @@ async fn screencap(
             Ok(())
         }
         other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Infers the encoding from a file extension (`.png` → PNG, `.webp` → WebP).
+fn format_from_ext(out: &str) -> Option<ImageFormat> {
+    let lower = out.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        Some(ImageFormat::Png)
+    } else if lower.ends_with(".webp") {
+        Some(ImageFormat::Webp)
+    } else {
+        None
+    }
+}
+
+/// One-shot "verify the UI": optionally launch an app, find its window, wait for
+/// it to render (until two frames are stable), and screenshot it.
+async fn shot(
+    controller: &mut Controller,
+    out: &str,
+    app: Option<String>,
+    window: Option<u64>,
+    launch: Option<String>,
+    wait: u64,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(wait);
+
+    if let Some(exe) = &launch {
+        match controller
+            .request(Command::OpenApp {
+                target: exe.clone(),
+                args: vec![],
+            })
+            .await?
+        {
+            Reply::AppOpened { .. } => {}
+            other => bail!("unexpected reply launching {exe}: {other:?}"),
+        }
+    }
+
+    let hwnd = if let Some(handle) = window {
+        handle
+    } else {
+        let needle = app
+            .clone()
+            .or_else(|| {
+                launch.as_deref().map(|e| {
+                    std::path::Path::new(e)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(e)
+                        .to_owned()
+                })
+            })
+            .ok_or_else(|| anyhow!("pass --window <handle>, --app <substr>, or --launch <exe>"))?;
+        find_window(controller, &needle, deadline).await?
+    };
+
+    let remaining = deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .as_millis() as u64;
+    let settle_ms = remaining.max(1500);
+    match controller
+        .request(Command::Screenshot {
+            target: CaptureTarget::Window(WindowId(hwnd)),
+            format: format_from_ext(out),
+            settle_ms: Some(settle_ms),
+            // A just-launched window starts on a static backdrop; wait for it to
+            // actually render before settling.
+            settle_await_change: launch.is_some(),
+        })
+        .await?
+    {
+        Reply::Image(image) => {
+            std::fs::write(out, &image.data).with_context(|| format!("writing {out}"))?;
+            println!(
+                "saved {out} (window {hwnd}, {}x{}, {:?}, {} bytes)",
+                image.width,
+                image.height,
+                image.format,
+                image.data.len()
+            );
+            Ok(())
+        }
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Polls the window list until one matches `needle` (title or process substring,
+/// case-insensitive) or the deadline passes.
+async fn find_window(
+    controller: &mut Controller,
+    needle: &str,
+    deadline: std::time::Instant,
+) -> Result<u64> {
+    let needle = needle.to_lowercase();
+    loop {
+        if let Reply::Windows(windows) = controller.request(Command::ListWindows).await?
+            && let Some(w) = windows.iter().find(|w| {
+                w.title.to_lowercase().contains(&needle)
+                    || w.process.to_lowercase().contains(&needle)
+            })
+        {
+            return Ok(w.id.0);
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("no window matching '{needle}' appeared within the wait");
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
     }
 }
 

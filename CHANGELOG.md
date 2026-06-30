@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`arc shot`** — one-shot "verify the UI": optionally `--launch` an app (or
+  find it by `--app <substr>` / `--window`), wait for it to render (the runner
+  re-captures until two frames are stable, not a blind sleep — and waits for the
+  initial backdrop to actually change after a launch), then screenshot. Replaces
+  the open → sleep → windows → grep → screencap → convert dance. Capture also
+  gained a `settle_ms` option for this. (Composition still requires the session
+  to have a display — see keep-display / a virtual display for headless boxes.)
 - **`screencap` encodes by file extension** — `shot.png` → PNG, `shot.webp` →
   WebP. No more client-side conversion just to view a capture.
 - **`screencap --element <id>`** — capture a single control's bounding box (id

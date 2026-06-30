@@ -103,6 +103,16 @@ pub enum Command {
         /// the WebP encoder rejects the frame.
         #[serde(default)]
         format: Option<ImageFormat>,
+        /// If set, the runner re-captures until two consecutive frames are
+        /// stable (or this many ms elapse) before returning — a reliable
+        /// replacement for a blind "wait for the app to render" sleep.
+        #[serde(default)]
+        settle_ms: Option<u64>,
+        /// When settling, first wait for the frame to *change* from the initial
+        /// capture (so a just-launched window's static backdrop isn't mistaken
+        /// for "rendered") before looking for stability.
+        #[serde(default)]
+        settle_await_change: bool,
     },
     /// Enumerate top-level windows.
     ListWindows,
