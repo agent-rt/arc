@@ -107,6 +107,20 @@ pub enum Command {
         /// Window to inspect.
         window: WindowId,
     },
+    /// Find elements in `window` matching `query` — so an Agent can target a
+    /// control by name / automation-id / type without listing the whole tree.
+    /// With `wait_ms` set, the runner re-scans until at least one element matches
+    /// or the deadline elapses (returning a timeout error); otherwise it returns
+    /// the current matches at once (possibly empty).
+    FindElements {
+        /// Window to search.
+        window: WindowId,
+        /// Attribute filter.
+        query: ElementQuery,
+        /// If set, poll until ≥1 match or this many ms elapse.
+        #[serde(default)]
+        wait_ms: Option<u64>,
+    },
     /// Invoke/click a UI element or a raw screen coordinate.
     Click {
         /// What to click.
@@ -518,8 +532,69 @@ pub struct ElementInfo {
     pub control_type: String,
     /// Accessible name, if any.
     pub name: Option<String>,
+    /// UIA AutomationId — the app-assigned stable identifier, if any.
+    #[serde(default)]
+    pub automation_id: Option<String>,
     /// Whether the element is enabled and on-screen.
     pub actionable: bool,
+}
+
+/// Attribute filter for [`Command::FindElements`]. An element matches when every
+/// *provided* field matches (omitted fields are ignored); string comparisons are
+/// ASCII-case-insensitive, and `name` is substring-matched when `name_contains`
+/// is set, else compared whole.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElementQuery {
+    /// Accessible name to match.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Treat `name` as a substring rather than the whole name.
+    #[serde(default)]
+    pub name_contains: bool,
+    /// UIA AutomationId to match.
+    #[serde(default)]
+    pub automation_id: Option<String>,
+    /// Control type to match (e.g. `"Button"`, `"Edit"`).
+    #[serde(default)]
+    pub control_type: Option<String>,
+    /// Restrict to elements that are enabled and on-screen.
+    #[serde(default)]
+    pub actionable_only: bool,
+}
+
+impl ElementQuery {
+    /// Whether `info` satisfies every provided criterion.
+    #[must_use]
+    pub fn matches(&self, info: &ElementInfo) -> bool {
+        if self.actionable_only && !info.actionable {
+            return false;
+        }
+        if let Some(ct) = &self.control_type
+            && !info.control_type.eq_ignore_ascii_case(ct)
+        {
+            return false;
+        }
+        if let Some(aid) = &self.automation_id
+            && info.automation_id.as_deref().is_none_or(|v| !v.eq_ignore_ascii_case(aid))
+        {
+            return false;
+        }
+        if let Some(want) = &self.name {
+            let Some(have) = &info.name else {
+                return false;
+            };
+            let ok = if self.name_contains {
+                have.to_ascii_lowercase()
+                    .contains(&want.to_ascii_lowercase())
+            } else {
+                have.eq_ignore_ascii_case(want)
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Interim progress emitted before a [`Response`]; correlated by [`RequestId`].

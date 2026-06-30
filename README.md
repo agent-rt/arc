@@ -77,6 +77,8 @@ arc pull C:/work/app/bin ./bin      # fetch a tree (or file) back
 arc screencap shot.webp --window N  # screenshot to a file
 arc windows                         # list top-level windows
 arc elements <hwnd>                 # list a window's UI Automation elements
+arc find <hwnd> --type Button --name Save   # query elements by attribute (no full dump)
+arc wait <hwnd> --name Done --timeout 30     # block until a matching element appears
 arc open notepad                    # launch an app
 arc click <element-id>              # click a UI element (from `elements`)
 arc set <element-id> 'text'         # set a control's value directly
@@ -127,8 +129,9 @@ cross-shell quoting to escape, args passed straight through.
 
 The same `arc` binary runs as a stdio MCP server with `arc --mcp`, exposing every
 capability as a tool (`run_command`, `run_script`, `screenshot`, `list_windows`,
-`list_elements`, `click`, `type_text`, `set_value`, `read_file`, `write_file`,
-…). Register it with, e.g., [`mcpctl`](https://github.com/agent-rt/mcpctl):
+`list_elements`, `find_elements`, `click`, `type_text`, `set_value`, `read_file`,
+`write_file`, …). Register it with, e.g.,
+[`mcpctl`](https://github.com/agent-rt/mcpctl):
 
 ```bash
 mcpctl server add arc --command arc --args --mcp \

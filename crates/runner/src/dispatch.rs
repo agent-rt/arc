@@ -67,6 +67,11 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
         Command::OpenApp { target, args } => blocking(move || apps::open_app(&target, &args)).await,
         Command::ListWindows => blocking(apps::list_windows).await,
         Command::ListElements { window } => blocking(move || uia::list_elements(window)).await,
+        Command::FindElements {
+            window,
+            query,
+            wait_ms,
+        } => blocking(move || uia::find_elements(window, &query, wait_ms)).await,
         Command::Click { target } => blocking(move || click(target)).await,
         Command::TypeText { text } => blocking(move || input::type_text(&text)).await,
         Command::KeyChord { modifiers, key } => {

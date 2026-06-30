@@ -16,10 +16,10 @@
 //! [`NotFound`]: arc_proto::wire::RemoteErrorKind::NotFound
 
 #[cfg(windows)]
-pub use imp::{click_element, list_elements, set_value};
+pub use imp::{click_element, find_elements, list_elements, set_value};
 
 #[cfg(not(windows))]
-pub use stub::{click_element, list_elements, set_value};
+pub use stub::{click_element, find_elements, list_elements, set_value};
 
 #[cfg(not(windows))]
 mod stub {
@@ -35,6 +35,13 @@ mod stub {
     pub fn list_elements(_window: WindowId) -> RemoteResult<Reply> {
         Err(unsupported())
     }
+    pub fn find_elements(
+        _window: WindowId,
+        _query: &arc_proto::wire::ElementQuery,
+        _wait_ms: Option<u64>,
+    ) -> RemoteResult<Reply> {
+        Err(unsupported())
+    }
     pub fn click_element(_element_id: &str) -> RemoteResult<Reply> {
         Err(unsupported())
     }
@@ -46,6 +53,7 @@ mod stub {
 #[cfg(windows)]
 mod imp {
     use core::ffi::c_void;
+    use std::time::{Duration, Instant};
 
     use arc_proto::id::{ElementId, WindowId};
     use arc_proto::wire::{ElementInfo, MouseButton, Reply};
@@ -63,7 +71,7 @@ mod imp {
     };
     use windows::core::BSTR;
 
-    use crate::dispatch::{RemoteResult, not_found, os_error};
+    use crate::dispatch::{RemoteResult, not_found, os_error, timeout_error};
 
     /// Cap on elements returned by a single [`list_elements`]; deep windows can
     /// hold thousands of nodes and an Agent rarely needs them all at once.
@@ -89,9 +97,53 @@ mod imp {
     /// Enumerates up to [`MAX_ELEMENTS`] descendants of `window`.
     pub fn list_elements(window: WindowId) -> RemoteResult<Reply> {
         let automation = automation()?;
-        // SAFETY: `automation` is a valid IUIAutomation; the HWND is validated
-        // by ElementFromHandle, which errors on a stale handle. All returned
-        // interface pointers are checked before use.
+        // SAFETY: `automation` is a valid IUIAutomation; `collect` only borrows it.
+        Ok(Reply::Elements(unsafe { collect(&automation, window) }?))
+    }
+
+    /// Finds elements in `window` matching `query`. With `wait_ms`, re-scans on a
+    /// short interval until at least one matches or the deadline passes (a
+    /// timeout error); otherwise returns the current matches at once.
+    pub fn find_elements(
+        window: WindowId,
+        query: &arc_proto::wire::ElementQuery,
+        wait_ms: Option<u64>,
+    ) -> RemoteResult<Reply> {
+        let automation = automation()?;
+        let deadline = wait_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+        loop {
+            // SAFETY: `automation` is valid; `collect` only borrows it.
+            let hits: Vec<ElementInfo> = unsafe { collect(&automation, window) }?
+                .into_iter()
+                .filter(|info| query.matches(info))
+                .collect();
+            if !hits.is_empty() || wait_ms.is_none() {
+                return Ok(Reply::Elements(hits));
+            }
+            match deadline {
+                Some(at) if Instant::now() < at => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                _ => {
+                    return Err(timeout_error(format!(
+                        "no element matched within {} ms",
+                        wait_ms.unwrap_or(0)
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Walks up to [`MAX_ELEMENTS`] descendants of `window` into [`ElementInfo`]s.
+    ///
+    /// # Safety
+    /// `automation` must be a live `IUIAutomation` for this thread.
+    unsafe fn collect(
+        automation: &IUIAutomation,
+        window: WindowId,
+    ) -> RemoteResult<Vec<ElementInfo>> {
+        // SAFETY: the HWND is validated by ElementFromHandle, which errors on a
+        // stale handle; all returned interface pointers are checked before use.
         unsafe {
             let root: IUIAutomationElement = automation
                 .ElementFromHandle(hwnd_from(window.0))
@@ -113,7 +165,7 @@ mod imp {
                     .map_err(|e| os_error(format!("get element {index}: {e}")))?;
                 infos.push(describe(&element, window.0));
             }
-            Ok(Reply::Elements(infos))
+            Ok(infos)
         }
     }
 
@@ -260,6 +312,10 @@ mod imp {
             .map(|b| b.to_string())
             .ok()
             .filter(|s| !s.is_empty());
+        let automation_id = unsafe { element.CurrentAutomationId() }
+            .map(|b| b.to_string())
+            .ok()
+            .filter(|s| !s.is_empty());
         let control_type = unsafe { element.CurrentControlType() }
             .map(control_type_name)
             .unwrap_or_else(|_| "Unknown".to_owned());
@@ -276,6 +332,7 @@ mod imp {
             id: ElementId(encode_element_id(hwnd, &runtime_id)),
             control_type,
             name,
+            automation_id,
             actionable: enabled && !offscreen,
         }
     }

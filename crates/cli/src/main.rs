@@ -20,7 +20,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use arc_net::{Controller, SessionConfig, Transport};
 use arc_proto::id::{ElementId, PairingCode, SessionId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, Command, Event, MouseAction, MouseButton, Reply, Shell,
+    CaptureTarget, ClickTarget, Command, ElementInfo, ElementQuery, Event, MouseAction,
+    MouseButton, Reply, Shell,
 };
 use blake2::{Blake2s256, Digest};
 use clap::{Parser, Subcommand};
@@ -146,6 +147,46 @@ enum Cmd {
     Windows,
     /// List a window's UI Automation elements.
     Elements { window: u64 },
+    /// Find elements in a window by attribute (no full-tree dump). Prints the
+    /// matches as `id | control_type | actionable? | automation_id | name`.
+    Find {
+        /// Window handle (from `windows`).
+        window: u64,
+        /// Match the accessible name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Match `--name` as a substring instead of the whole name.
+        #[arg(long)]
+        contains: bool,
+        /// Match the UIA AutomationId.
+        #[arg(long = "id")]
+        automation_id: Option<String>,
+        /// Match the control type (e.g. `Button`, `Edit`).
+        #[arg(long = "type")]
+        control_type: Option<String>,
+        /// Only enabled, on-screen elements.
+        #[arg(long)]
+        actionable: bool,
+    },
+    /// Wait until an element matching the query appears (polls the runner), then
+    /// print it. Exits non-zero on timeout. Same filters as `find`.
+    Wait {
+        /// Window handle (from `windows`).
+        window: u64,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        contains: bool,
+        #[arg(long = "id")]
+        automation_id: Option<String>,
+        #[arg(long = "type")]
+        control_type: Option<String>,
+        #[arg(long)]
+        actionable: bool,
+        /// Give up after this many seconds.
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+    },
     /// Launch an application by path or name.
     Open {
         target: String,
@@ -342,6 +383,47 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Screencap { out, window } => screencap(&mut controller, &out, window).await?,
         Cmd::Windows => windows(&mut controller).await?,
         Cmd::Elements { window } => elements(&mut controller, window).await?,
+        Cmd::Find {
+            window,
+            name,
+            contains,
+            automation_id,
+            control_type,
+            actionable,
+        } => {
+            let query = ElementQuery {
+                name,
+                name_contains: contains,
+                automation_id,
+                control_type,
+                actionable_only: actionable,
+            };
+            return find_elements(&mut controller, window, query, None).await;
+        }
+        Cmd::Wait {
+            window,
+            name,
+            contains,
+            automation_id,
+            control_type,
+            actionable,
+            timeout,
+        } => {
+            let query = ElementQuery {
+                name,
+                name_contains: contains,
+                automation_id,
+                control_type,
+                actionable_only: actionable,
+            };
+            return find_elements(
+                &mut controller,
+                window,
+                query,
+                Some(timeout.saturating_mul(1000)),
+            )
+            .await;
+        }
         Cmd::Open { target, args } => open(&mut controller, target, args).await?,
         Cmd::Click { element_id } => {
             ack(
@@ -1094,23 +1176,56 @@ async fn elements(controller: &mut Controller, window: u64) -> Result<()> {
         .await?
     {
         Reply::Elements(elements) => {
-            for e in elements {
-                println!(
-                    "{} | {} | {} | {}",
-                    e.id.0,
-                    e.control_type,
-                    if e.actionable {
-                        "actionable"
-                    } else {
-                        "inactive"
-                    },
-                    e.name.as_deref().unwrap_or("")
-                );
+            for e in &elements {
+                print_element(e);
             }
             Ok(())
         }
         other => bail!("unexpected reply: {other:?}"),
     }
+}
+
+/// Finds elements by attribute (`wait_ms = None`) or waits for one to appear
+/// (`wait_ms = Some`), printing the matches. A `wait` that times out surfaces
+/// as the runner's error.
+async fn find_elements(
+    controller: &mut Controller,
+    window: u64,
+    query: ElementQuery,
+    wait_ms: Option<u64>,
+) -> Result<i32> {
+    match controller
+        .request(Command::FindElements {
+            window: WindowId(window),
+            query,
+            wait_ms,
+        })
+        .await?
+    {
+        Reply::Elements(elements) => {
+            for e in &elements {
+                print_element(e);
+            }
+            Ok(0)
+        }
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Prints one element row: `id | control_type | actionable? | automation_id | name`.
+fn print_element(e: &ElementInfo) {
+    println!(
+        "{} | {} | {} | {} | {}",
+        e.id.0,
+        e.control_type,
+        if e.actionable {
+            "actionable"
+        } else {
+            "inactive"
+        },
+        e.automation_id.as_deref().unwrap_or(""),
+        e.name.as_deref().unwrap_or(""),
+    );
 }
 
 async fn open(controller: &mut Controller, target: String, args: Vec<String>) -> Result<()> {

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, Command, Event, ImageFormat, MouseAction, MouseButton, Reply,
-    Shell, parse_chord,
+    CaptureTarget, ClickTarget, Command, ElementInfo, ElementQuery, Event, ImageFormat,
+    MouseAction, MouseButton, Reply, Shell, parse_chord,
 };
 use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -89,6 +89,32 @@ pub struct ScreenshotArgs {
 pub struct ListElementsArgs {
     /// Native window handle (the `id` from `list_windows`).
     pub window: u64,
+}
+
+/// Arguments for [`AgentRc::find_elements`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FindElementsArgs {
+    /// Native window handle (the `id` from `list_windows`).
+    pub window: u64,
+    /// Match the accessible name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Match `name` as a substring rather than the whole name.
+    #[serde(default)]
+    pub name_contains: bool,
+    /// Match the UIA AutomationId.
+    #[serde(default)]
+    pub automation_id: Option<String>,
+    /// Match the control type (e.g. `"Button"`, `"Edit"`).
+    #[serde(default)]
+    pub control_type: Option<String>,
+    /// Only enabled, on-screen elements.
+    #[serde(default)]
+    pub actionable_only: bool,
+    /// If set, poll until ≥1 element matches or this many ms elapse (errors on
+    /// timeout). Omitted = return current matches at once (possibly none).
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
 }
 
 /// Arguments for [`AgentRc::click_element`].
@@ -383,29 +409,38 @@ impl AgentRc {
             })
             .await?
         {
-            Reply::Elements(elements) => {
-                let text = elements
-                    .iter()
-                    .map(|e| {
-                        format!(
-                            "{} | {} | {} | {}",
-                            e.id.0,
-                            e.control_type,
-                            if e.actionable {
-                                "actionable"
-                            } else {
-                                "inactive"
-                            },
-                            e.name.as_deref().unwrap_or("")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(CallToolResult::success(vec![Content::text(blank_as(
-                    text,
-                    "<no elements>",
-                ))]))
-            }
+            Reply::Elements(elements) => Ok(CallToolResult::success(vec![Content::text(
+                blank_as(format_elements(&elements), "<no elements>"),
+            )])),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    #[tool(
+        description = "Find UI elements in a window by attribute — name, automation_id, control_type, or actionable — without dumping the whole tree. With wait_ms set, polls until at least one matches or the timeout elapses (errors on timeout), so you can wait for a control to appear. Returns matching rows `element_id | control_type | actionable? | automation_id | name`."
+    )]
+    async fn find_elements(
+        &self,
+        Parameters(args): Parameters<FindElementsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let query = ElementQuery {
+            name: args.name,
+            name_contains: args.name_contains,
+            automation_id: args.automation_id,
+            control_type: args.control_type,
+            actionable_only: args.actionable_only,
+        };
+        match self
+            .dispatch(Command::FindElements {
+                window: WindowId(args.window),
+                query,
+                wait_ms: args.wait_ms,
+            })
+            .await?
+        {
+            Reply::Elements(elements) => Ok(CallToolResult::success(vec![Content::text(
+                blank_as(format_elements(&elements), "<no match>"),
+            )])),
             other => Err(unexpected(&other)),
         }
     }
@@ -688,7 +723,8 @@ impl ServerHandler for AgentRc {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Remote-control a Windows machine for an Agent. Tools: run_command (shell), \
-                 run_script (run a script by source), screenshot (view the desktop). \
+                 run_script (run a script by source), find_elements (locate/await a \
+                 control by attribute), screenshot (view the desktop). \
                  Requires a paired arc-runner connected to the same relay session.",
             )
     }
@@ -696,6 +732,25 @@ impl ServerHandler for AgentRc {
 
 fn map_err(error: ControllerError) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+/// Renders elements as one `id | control_type | actionable? | automation_id | name`
+/// row each. Shared by `list_elements` and `find_elements`.
+fn format_elements(elements: &[ElementInfo]) -> String {
+    elements
+        .iter()
+        .map(|e| {
+            format!(
+                "{} | {} | {} | {} | {}",
+                e.id.0,
+                e.control_type,
+                if e.actionable { "actionable" } else { "inactive" },
+                e.automation_id.as_deref().unwrap_or(""),
+                e.name.as_deref().unwrap_or(""),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `"cmd"` → [`Shell::Cmd`]; anything else (incl. `None`) → [`Shell::PowerShell`].
