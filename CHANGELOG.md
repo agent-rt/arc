@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`arc watch … --on-change '<cmd>'`** — after each auto-sync (and once at
+  startup), run a PowerShell command on the runner with live output, e.g.
+  `arc watch ./src C:/work/src --on-change 'cargo build'`. Closes the
+  edit → push → build inner loop in one command. A failing hook is reported but
+  never stops the watch.
 - **`arc tail <remote>`** — print a remote file's last lines (`-n N`); `-f`
   follows it, streaming appended lines until interrupted, for watching build/app
   logs without a shell incantation.

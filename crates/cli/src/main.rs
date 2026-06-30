@@ -134,7 +134,14 @@ enum Cmd {
     /// Watch a local directory and auto-push changes to the runner as they
     /// happen (incremental, `.gitignore`-aware, build dirs ignored). Runs until
     /// interrupted. The dev-loop companion to a one-shot `push`.
-    Watch { local: String, remote: String },
+    Watch {
+        local: String,
+        remote: String,
+        /// After each sync (and once at startup), run this PowerShell command on
+        /// the runner — e.g. `--on-change 'cargo build'`. Output streams live.
+        #[arg(long, value_name = "CMD")]
+        on_change: Option<String>,
+    },
     /// Print a remote file to stdout (UTF-8, lossy). For binary or to save a
     /// copy, use `pull`.
     Cat { remote: String },
@@ -475,7 +482,11 @@ async fn run(cli: Cli) -> Result<i32> {
             dry_run,
             whole,
         } => pull(&mut controller, &remote, &local, delete, dry_run, whole).await?,
-        Cmd::Watch { local, remote } => watch(&mut controller, &local, &remote).await?,
+        Cmd::Watch {
+            local,
+            remote,
+            on_change,
+        } => watch(&mut controller, &local, &remote, on_change.as_deref()).await?,
         Cmd::Cat { remote } => cat(&mut controller, &remote).await?,
         Cmd::Screencap {
             out,
@@ -1022,12 +1033,21 @@ async fn push_tree(
 /// Build/VCS dirs are ignored at the watcher level (no churn during `cargo
 /// build`); each burst of events is debounced, then a hash-diff sync transfers
 /// only what actually changed.
-async fn watch(controller: &mut Controller, local: &str, remote: &str) -> Result<()> {
+async fn watch(
+    controller: &mut Controller,
+    local: &str,
+    remote: &str,
+    on_change: Option<&str>,
+) -> Result<()> {
     let initial = push_tree(controller, local, remote, false, false, false).await?;
     println!(
         "initial sync: {}/{} files ({} bytes) {local} -> {remote}",
         initial.changed, initial.total, initial.bytes
     );
+    // Run the hook once at startup so a fresh `watch` produces a baseline build.
+    if let Some(cmd) = on_change {
+        run_on_change(controller, cmd).await;
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<()>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -1054,12 +1074,38 @@ async fn watch(controller: &mut Controller, local: &str, remote: &str) -> Result
             }
         }
         match push_tree(controller, local, remote, false, false, false).await {
-            Ok(s) if s.changed > 0 => println!("synced {} files ({} bytes)", s.changed, s.bytes),
+            Ok(s) if s.changed > 0 => {
+                println!("synced {} files ({} bytes)", s.changed, s.bytes);
+                if let Some(cmd) = on_change {
+                    run_on_change(controller, cmd).await;
+                }
+            }
             Ok(_) => {}
             Err(e) => eprintln!("arc: sync error: {e:#}"),
         }
     }
     Ok(())
+}
+
+/// Runs the `watch --on-change` hook on the runner, streaming its output. Errors
+/// and non-zero exits are reported but never abort the watch loop.
+async fn run_on_change(controller: &mut Controller, cmd: &str) {
+    println!("→ on-change: {cmd}");
+    let result = stream_run(
+        controller,
+        Command::RunCommand {
+            shell: Shell::PowerShell,
+            command: cmd.to_owned(),
+            timeout_ms: None, // a build/test may run long; the user Ctrl+Cs the watch
+            stream: true,
+        },
+    )
+    .await;
+    match result {
+        Ok(0) => {}
+        Ok(code) => eprintln!("arc: on-change exited {code}"),
+        Err(e) => eprintln!("arc: on-change error: {e:#}"),
+    }
 }
 
 /// True if `path` is not inside a build/VCS directory (the watcher filter).
