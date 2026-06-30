@@ -83,7 +83,7 @@ arc open notepad                    # launch an app
 arc click <element-id>              # click a UI element (from `elements`)
 arc set <element-id> 'text'         # set a control's value directly
 arc type 'hello'                    # type Unicode text
-arc key ctrl+s                      # keys & chords: enter, esc, f5, ctrl+c, alt+f4…
+arc key ctrl+a delete enter         # key chords in sequence: enter, f5, ctrl+c, alt+f4…
 arc mouse drag 40 80 300 400        # move / click / down / up / scroll / drag
 ```
 
