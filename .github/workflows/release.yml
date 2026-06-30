@@ -208,9 +208,10 @@ jobs:
                 arc is the controller (CLI + \`arc --mcp\` MCP server).
                 On the machine you want to drive (Windows):
                   winget install agent-rt.arc-runner
-                  arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
+                  arc-runner install --tailscale
                 Paste the printed [targets.win] block into ~/.config/arc/config.toml, then:
                   arc -t win shell --cmd ver
+                Update later with: arc-runner upgrade
               EOS
             end
 
