@@ -72,19 +72,25 @@ instead of Tailscale, use `arc-runner install --relay <ws-url>`.
 arc shell --cmd 'dotnet build'      # run a command (streams live; --timeout <secs>)
 arc run ./fix.ps1 -Port 8788        # ship & run a local script (.ps1/.bat); args pass through
 arc push ./app C:/work/app          # send a tree up (incremental, .gitignore-aware)
-arc watch ./app C:/work/app         # auto-push on every save — the inner dev loop
+arc watch ./app C:/work/app --on-change 'cargo build'   # auto-push + rebuild on every save
 arc pull C:/work/app/bin ./bin      # fetch a tree (or file) back
-arc screencap shot.webp --window N  # screenshot to a file
-arc windows                         # list top-level windows
-arc elements <hwnd>                 # list a window's UI Automation elements
+arc cat C:/work/app/log.txt         # print a remote file
+arc tail C:/work/app/log.txt -f     # follow a remote log (streams new lines)
+arc shot ui.png --launch notepad    # launch → wait for render → screenshot, one shot
+arc screencap shot.png --window N   # screenshot to a file (.png/.webp by extension)
+arc screencap now.png --window N --baseline before.png --diff diff.png   # regression diff
+arc windows --filter notepad        # list top-level windows (--json for structured)
+arc elements <hwnd> --json          # list a window's UI Automation elements
 arc find <hwnd> --type Button --name Save   # query elements by attribute (no full dump)
 arc wait <hwnd> --name Done --timeout 30     # block until a matching element appears
 arc open notepad                    # launch an app
+arc ps notepad                      # list remote processes; arc kill <pid|name>
 arc click <element-id>              # click a UI element (from `elements`)
 arc set <element-id> 'text'         # set a control's value directly
-arc type 'hello'                    # type Unicode text
+arc type 'hello' --into <element-id>   # focus an element, then type into it
 arc key ctrl+a delete enter         # key chords in sequence: enter, f5, ctrl+c, alt+f4…
 arc mouse drag 40 80 300 400        # move / click / down / up / scroll / drag
+arc clip get                        # read the remote clipboard; arc clip set 'text'
 ```
 
 ### Connecting
@@ -114,8 +120,9 @@ single file is copied wholesale; a **directory transfers incrementally** —
 content-hashed with one round-trip to skip unchanged files, never walking build
 dirs (`target`/`bin`/`obj`/…). Flags: `--delete` (mirror the source),
 `--dry-run`, `--whole` (skip the diff). `arc watch` keeps a tree mirrored live
-(debounced, build-churn-ignoring) — pair it with `arc shell '<build>'` for a
-zero-ssh edit → build → run → screenshot loop. To run a local script on the box,
+(debounced, build-churn-ignoring); add `--on-change '<build>'` to rebuild on the
+box after every sync — a zero-ssh edit → build → run → screenshot loop. To run a
+local script on the box,
 `arc run ./script.ps1 [args]` ships its contents and executes it (interpreter by
 extension; `.ps1` runs with `-ExecutionPolicy Bypass`) — no `push` first, no
 cross-shell quoting to escape, args passed straight through.
