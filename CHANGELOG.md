@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Internals:** the CLI crate's monolithic `main.rs` (~2150 lines) was split
+  into domain modules (`config`, `exec`, `files`, `capture`, `ui`, `agents_md`);
+  `main.rs` now holds just the command surface and dispatch. No behavior change.
 - **`arc agents-md`** — print a complete Markdown reference of every command and
   flag (generated from the CLI itself, so it never drifts) preceded by
   agent-oriented guidance: connecting, core workflows, and the
