@@ -35,11 +35,13 @@ just release 0.1.0     # cargo-release: bump workspace version, commit, tag v0.1
 ```bash
 brew install agent-rt/tap/arc       # arc (CLI + `arc --mcp` server)
 ```
+The formula prints a caveat reminding you to set up the Windows runner
+(`winget install agent-rt.arc-runner` → `arc-runner install …`) and add the
+`[targets.win]` block it emits to `~/.config/arc/config.toml`.
 
-**Windows — runner:** the zip is a portable winget package; submit a manifest
-for `agent-rt.arc-runner` to winget-pkgs (or via `winget-releaser` on release),
-`InstallerType: zip`, `NestedInstallerType: portable`, alias `arc-runner`,
-pointing at the `arc` release zip URL. Then:
+**Windows — runner:** the `windows` job uploads a bare `arc-runner.exe`, and the
+`winget` job (`vedantmgoyal9/winget-releaser`) submits/updates the
+`agent-rt.arc-runner` portable manifest to winget-pkgs on each release. Then:
 ```powershell
 winget install agent-rt.arc-runner
 arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
@@ -49,8 +51,15 @@ arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@exampl
 `[targets.win]` block for `~/.config/arc/config.toml`. `arc-runner uninstall`
 removes it.
 
+### Extra one-time setup
+
+- Repo/org secret **`WINGET_TOKEN`**: a classic PAT (public_repo) on an account
+  that has forked `microsoft/winget-pkgs` — winget-releaser opens the PR from it.
+- First `agent-rt.*` submission to winget-pkgs is reviewed/merged by Microsoft;
+  later releases just bump the version.
+- Verify/pin the `winget-releaser` action ref (`@main` here) to a release tag.
+
 ## TODO
 
-- winget manifest + `winget-releaser` wiring (the one piece not yet automated).
 - Code signing: unsigned Windows binaries trigger SmartScreen — document the
   bypass, or add Azure Trusted Signing / sigstore to the `windows` job.

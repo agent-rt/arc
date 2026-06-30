@@ -130,6 +130,19 @@ jobs:
           files: |
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.shafile }}
+            target/release/arc-runner.exe
+
+  # Submit/refresh the winget manifest for agent-rt.arc-runner (portable exe).
+  winget:
+    name: Publish to winget
+    needs: windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: agent-rt.arc-runner
+          installers-regex: 'arc-runner\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
 
   # Generate/refresh the Homebrew formula in the tap (installs arc).
   update-formula:
@@ -183,6 +196,17 @@ jobs:
 
             def install
               bin.install "arc"
+            end
+
+            def caveats
+              <<~EOS
+                arc is the controller (CLI + \`arc --mcp\` MCP server).
+                On the machine you want to drive (Windows):
+                  winget install agent-rt.arc-runner
+                  arc-runner install --listen <tailnet-ip>:8787 --trust-tailnet --allow you@example.com
+                Paste the printed [targets.win] block into ~/.config/arc/config.toml, then:
+                  arc -t win shell --cmd ver
+              EOS
             end
 
             test do
