@@ -58,6 +58,9 @@ async fn main() -> Result<(), Error> {
         2,
         Command::Screenshot {
             target: CaptureTarget::FullScreen,
+            format: None,
+            settle_ms: None,
+            settle_await_change: false,
         },
     )
     .await?;
