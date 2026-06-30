@@ -95,10 +95,14 @@ pub enum Command {
         /// Command-line arguments.
         args: Vec<String>,
     },
-    /// Capture an image of the screen, a window, or a region.
+    /// Capture an image of the screen, a window, an element, or a region.
     Screenshot {
         /// What to capture.
         target: CaptureTarget,
+        /// Preferred encoding (`None` = WebP). PNG falls back automatically if
+        /// the WebP encoder rejects the frame.
+        #[serde(default)]
+        format: Option<ImageFormat>,
     },
     /// Enumerate top-level windows.
     ListWindows,
@@ -217,12 +221,14 @@ pub enum Shell {
 }
 
 /// What [`Command::Screenshot`] should capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CaptureTarget {
     /// The entire virtual desktop.
     FullScreen,
     /// A single window by handle.
     Window(WindowId),
+    /// A single UI element by id — captured as its on-screen bounding box.
+    Element(ElementId),
     /// A rectangular region in virtual-desktop coordinates.
     Region {
         /// Left edge.

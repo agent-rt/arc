@@ -16,10 +16,10 @@
 //! [`NotFound`]: arc_proto::wire::RemoteErrorKind::NotFound
 
 #[cfg(windows)]
-pub use imp::{click_element, find_elements, list_elements, set_value};
+pub use imp::{click_element, element_rect, find_elements, list_elements, set_value};
 
 #[cfg(not(windows))]
-pub use stub::{click_element, find_elements, list_elements, set_value};
+pub use stub::{click_element, element_rect, find_elements, list_elements, set_value};
 
 #[cfg(not(windows))]
 mod stub {
@@ -46,6 +46,9 @@ mod stub {
         Err(unsupported())
     }
     pub fn set_value(_element_id: &str, _value: &str) -> RemoteResult<Reply> {
+        Err(unsupported())
+    }
+    pub fn element_rect(_element_id: &str) -> RemoteResult<arc_proto::wire::Rect> {
         Err(unsupported())
     }
 }
@@ -206,6 +209,20 @@ mod imp {
                 .map_err(|e| os_error(format!("set value failed: {e}")))?;
             Ok(Reply::Ack)
         }
+    }
+
+    /// Returns an element's on-screen bounding rectangle (for element capture).
+    pub fn element_rect(element_id: &str) -> RemoteResult<Rect> {
+        let element = resolve(element_id)?;
+        // SAFETY: `element` is live this call.
+        let r = unsafe { element.CurrentBoundingRectangle() }
+            .map_err(|e| os_error(format!("bounding rect: {e}")))?;
+        Ok(Rect {
+            x: r.left,
+            y: r.top,
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+        })
     }
 
     /// Re-walks the window's subtree and returns the element whose RuntimeId

@@ -16,13 +16,16 @@ use crate::dispatch::{RemoteResult, not_found, os_error};
 ///
 /// Prefers WebP (smaller over the relay and for the Agent's vision model);
 /// falls back to PNG if the WebP encoder rejects the frame.
-pub fn screenshot(target: CaptureTarget) -> RemoteResult<Reply> {
+pub fn screenshot(target: CaptureTarget, format: Option<ImageFormat>) -> RemoteResult<Reply> {
     let image = capture(target)?;
     let (width, height) = (image.width(), image.height());
 
-    let (format, data) = match encode(&image, image::ImageFormat::WebP) {
-        Ok(data) => (ImageFormat::Webp, data),
-        Err(_) => (ImageFormat::Png, encode(&image, image::ImageFormat::Png)?),
+    let (format, data) = match format {
+        Some(ImageFormat::Png) => (ImageFormat::Png, encode(&image, image::ImageFormat::Png)?),
+        _ => match encode(&image, image::ImageFormat::WebP) {
+            Ok(data) => (ImageFormat::Webp, data),
+            Err(_) => (ImageFormat::Png, encode(&image, image::ImageFormat::Png)?),
+        },
     };
 
     Ok(Reply::Image(Image {
@@ -39,20 +42,27 @@ fn capture(target: CaptureTarget) -> RemoteResult<RgbaImage> {
         CaptureTarget::Window(WindowId(id)) => {
             arc_capture::capture_window(id as isize).map_err(map_err)
         }
+        CaptureTarget::Element(element) => {
+            let r = crate::uia::element_rect(&element.0)?;
+            crop_monitor(r.x, r.y, r.width.max(1) as u32, r.height.max(1) as u32)
+        }
         CaptureTarget::FullScreen => arc_capture::capture_primary_monitor().map_err(map_err),
         CaptureTarget::Region {
             x,
             y,
             width,
             height,
-        } => {
-            let full = arc_capture::capture_primary_monitor().map_err(map_err)?;
-            Ok(
-                image::imageops::crop_imm(&full, x.max(0) as u32, y.max(0) as u32, width, height)
-                    .to_image(),
-            )
-        }
+        } => crop_monitor(x, y, width, height),
     }
+}
+
+/// Captures the primary monitor and crops to a screen rectangle.
+fn crop_monitor(x: i32, y: i32, width: u32, height: u32) -> RemoteResult<RgbaImage> {
+    let full = arc_capture::capture_primary_monitor().map_err(map_err)?;
+    Ok(
+        image::imageops::crop_imm(&full, x.max(0) as u32, y.max(0) as u32, width, height)
+            .to_image(),
+    )
 }
 
 /// Maps a capture error to a protocol error, preserving the not-found category.

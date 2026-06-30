@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`screencap` encodes by file extension** — `shot.png` → PNG, `shot.webp` →
+  WebP. No more client-side conversion just to view a capture.
+- **`screencap --element <id>`** — capture a single control's bounding box (id
+  from `elements`/`find`). MCP `screenshot` gains an `element` argument too.
+- **Runner is now per-monitor DPI-aware** — window/element rects and capture are
+  all in physical pixels, so element crops, region captures and rect-based input
+  line up on scaled (high-DPI) displays. (`windows --json` rects now match the
+  captured image size.)
 - **`--json` on `windows` / `elements` / `find` / `wait`** — structured output
   instead of pipe-delimited text, so agents stop scraping with `cut`/`grep`.
   Window records carry `id, title, process, focused, rect`; element records carry

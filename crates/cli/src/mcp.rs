@@ -77,11 +77,15 @@ pub struct RunScriptArgs {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ScreenshotArgs {
     /// Optional window handle (from `list_windows`) to capture just that window;
-    /// omit for the full screen. Capturing a single window also succeeds in a
-    /// detached / disconnected-RDP session via the GDI `PrintWindow` fallback,
+    /// omit for the full screen. A single window captures correctly (via
+    /// Windows.Graphics.Capture) even in a detached/disconnected-RDP session,
     /// where a full-screen capture may not.
     #[serde(default)]
     pub window: Option<u64>,
+    /// Optional element id (from `list_elements`/`find_elements`) to capture just
+    /// that control's bounding box. Takes precedence over `window`.
+    #[serde(default)]
+    pub element: Option<String>,
 }
 
 /// Arguments for [`AgentRc::list_elements`].
@@ -359,11 +363,19 @@ impl AgentRc {
         &self,
         Parameters(args): Parameters<ScreenshotArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let target = match args.window {
-            Some(handle) => CaptureTarget::Window(WindowId(handle)),
-            None => CaptureTarget::FullScreen,
+        let target = if let Some(id) = args.element {
+            CaptureTarget::Element(ElementId(id))
+        } else if let Some(handle) = args.window {
+            CaptureTarget::Window(WindowId(handle))
+        } else {
+            CaptureTarget::FullScreen
         };
-        let reply = self.dispatch(Command::Screenshot { target }).await?;
+        let reply = self
+            .dispatch(Command::Screenshot {
+                target,
+                format: None,
+            })
+            .await?;
         match reply {
             Reply::Image(img) => {
                 let mime = match img.format {

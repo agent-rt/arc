@@ -63,7 +63,9 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             timeout_ms,
             stream: false,
         } => exec::run_script(id, shell, &content, &args, timeout_ms).await,
-        Command::Screenshot { target } => blocking(move || capture::screenshot(target)).await,
+        Command::Screenshot { target, format } => {
+            blocking(move || capture::screenshot(target, format)).await
+        }
         Command::OpenApp { target, args } => blocking(move || apps::open_app(&target, &args)).await,
         Command::ListWindows => blocking(apps::list_windows).await,
         Command::ListElements { window } => blocking(move || uia::list_elements(window)).await,

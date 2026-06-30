@@ -38,6 +38,17 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    // Run DPI-aware so window/element rectangles and screen coordinates are in
+    // physical pixels — matching what WGC captures, so element crops, region
+    // captures and rect-based input line up on high-DPI (scaled) displays.
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+        };
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

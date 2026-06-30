@@ -20,8 +20,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use arc_net::{Controller, SessionConfig, Transport};
 use arc_proto::id::{ElementId, PairingCode, SessionId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, Command, ElementInfo, ElementQuery, Event, MouseAction,
-    MouseButton, Reply, Shell,
+    CaptureTarget, ClickTarget, Command, ElementInfo, ElementQuery, Event, ImageFormat,
+    MouseAction, MouseButton, Reply, Shell,
 };
 use blake2::{Blake2s256, Digest};
 use clap::{Parser, Subcommand};
@@ -135,13 +135,17 @@ enum Cmd {
     /// happen (incremental, `.gitignore`-aware, build dirs ignored). Runs until
     /// interrupted. The dev-loop companion to a one-shot `push`.
     Watch { local: String, remote: String },
-    /// Capture a screenshot to a file (bytes as returned: WebP, PNG fallback).
+    /// Capture a screenshot to a file. Encoding follows the file extension
+    /// (`.png` → PNG, else WebP) — no client-side conversion needed.
     Screencap {
-        /// Output file path.
+        /// Output file path (`.png` or `.webp`).
         out: String,
         /// Capture only this window handle (else the full screen).
         #[arg(long)]
         window: Option<u64>,
+        /// Capture only this element (id from `elements`/`find`) — its bounding box.
+        #[arg(long)]
+        element: Option<String>,
     },
     /// List top-level windows. Text is `handle | process | title`; `--json` emits
     /// structured records (handle, title, process, focused, rect).
@@ -408,7 +412,11 @@ async fn run(cli: Cli) -> Result<i32> {
             whole,
         } => pull(&mut controller, &remote, &local, delete, dry_run, whole).await?,
         Cmd::Watch { local, remote } => watch(&mut controller, &local, &remote).await?,
-        Cmd::Screencap { out, window } => screencap(&mut controller, &out, window).await?,
+        Cmd::Screencap {
+            out,
+            window,
+            element,
+        } => screencap(&mut controller, &out, window, element).await?,
         Cmd::Windows { json } => windows(&mut controller, json).await?,
         Cmd::Elements { window, json } => elements(&mut controller, window, json).await?,
         Cmd::Find {
@@ -1163,12 +1171,33 @@ async fn pull_to(controller: &mut Controller, remote: &str, local: &Path) -> Res
     Ok(offset)
 }
 
-async fn screencap(controller: &mut Controller, out: &str, window: Option<u64>) -> Result<()> {
-    let target = match window {
-        Some(handle) => CaptureTarget::Window(WindowId(handle)),
-        None => CaptureTarget::FullScreen,
+async fn screencap(
+    controller: &mut Controller,
+    out: &str,
+    window: Option<u64>,
+    element: Option<String>,
+) -> Result<()> {
+    let target = if let Some(id) = element {
+        CaptureTarget::Element(ElementId(id))
+    } else if let Some(handle) = window {
+        CaptureTarget::Window(WindowId(handle))
+    } else {
+        CaptureTarget::FullScreen
     };
-    match controller.request(Command::Screenshot { target }).await? {
+    // Encode to match the output extension (.png → PNG, else WebP) so there's
+    // no client-side conversion step.
+    let lower = out.to_ascii_lowercase();
+    let format = if lower.ends_with(".png") {
+        Some(ImageFormat::Png)
+    } else if lower.ends_with(".webp") {
+        Some(ImageFormat::Webp)
+    } else {
+        None
+    };
+    match controller
+        .request(Command::Screenshot { target, format })
+        .await?
+    {
         Reply::Image(image) => {
             std::fs::write(out, &image.data).with_context(|| format!("writing {out}"))?;
             println!(
