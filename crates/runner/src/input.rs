@@ -128,14 +128,16 @@ pub fn click_point(x: i32, y: i32, button: MouseButton) -> RemoteResult<Reply> {
 }
 
 /// Types Unicode text into the focused element.
+///
+/// Sends each code unit as its own down/up `SendInput` with a short gap rather
+/// than one big batch: WinUI apps (Win11 Notepad, WinUI 3) silently drop most
+/// of a large synthetic-input burst, so pacing is what makes typing reliable.
 pub fn type_text(text: &str) -> RemoteResult<Reply> {
-    let mut inputs = Vec::new();
     for unit in text.encode_utf16() {
-        inputs.push(unicode_event(unit, false));
-        inputs.push(unicode_event(unit, true));
-    }
-    if !inputs.is_empty() {
-        send(&inputs)?;
+        send(&[unicode_event(unit, false), unicode_event(unit, true)])?;
+        // ≥ the default ~15ms timer granularity, so the gap is real and WinUI
+        // input throttling doesn't coalesce/drop the burst.
+        std::thread::sleep(std::time::Duration::from_millis(16));
     }
     Ok(Reply::Ack)
 }
