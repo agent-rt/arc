@@ -84,10 +84,11 @@ enum Cmd {
         #[arg(trailing_var_arg = true, required = true)]
         args: Vec<String>,
     },
-    /// Run a local script on the runner: ships its *contents* (no pre-`push`, no
-    /// shell quoting to escape) and runs it with the matching interpreter
-    /// inferred from the extension — `.ps1` → PowerShell (`-ExecutionPolicy
-    /// Bypass`), `.bat`/`.cmd` → cmd. Output streams live; args after the script
+    /// Run a local `.ps1`/`.bat` script on the runner (streams live).
+    ///
+    /// Ships its *contents* (no pre-`push`, no shell quoting to escape) and runs
+    /// it with the interpreter inferred from the extension — `.ps1` → PowerShell
+    /// (`-ExecutionPolicy Bypass`), `.bat`/`.cmd` → cmd. Args after the script
     /// pass through to it.
     Run {
         /// Path to a local script file (`.ps1`, `.bat`, or `.cmd`).
@@ -99,9 +100,11 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Send local → runner. A single file is always copied; a directory
-    /// transfers incrementally (content-hash diff, `.gitignore`-aware, build
-    /// dirs skipped) — `--whole` forces a full copy, `--delete` mirrors.
+    /// Send a file or directory to the runner (directories sync incrementally).
+    ///
+    /// A single file is always copied; a directory transfers incrementally
+    /// (content-hash diff, `.gitignore`-aware, build dirs skipped) — `--whole`
+    /// forces a full copy, `--delete` mirrors.
     Push {
         /// Local file or directory to send.
         local: String,
@@ -117,9 +120,11 @@ enum Cmd {
         #[arg(long)]
         whole: bool,
     },
-    /// Fetch runner → local. A single file is always copied; a directory
-    /// transfers incrementally (content-hash diff, build dirs excluded) —
-    /// `--whole` forces a full copy, `--delete` mirrors.
+    /// Fetch a file or directory from the runner (directories sync incrementally).
+    ///
+    /// A single file is always copied; a directory transfers incrementally
+    /// (content-hash diff, build dirs excluded) — `--whole` forces a full copy,
+    /// `--delete` mirrors.
     Pull {
         /// Source path on the runner.
         remote: String,
@@ -135,9 +140,11 @@ enum Cmd {
         #[arg(long)]
         whole: bool,
     },
-    /// Watch a local directory and auto-push changes to the runner as they
-    /// happen (incremental, `.gitignore`-aware, build dirs ignored). Runs until
-    /// interrupted. The dev-loop companion to a one-shot `push`.
+    /// Auto-push a directory on every save; `--on-change` rebuilds on the runner.
+    ///
+    /// Watches a local dir and pushes changes as they happen (incremental,
+    /// `.gitignore`-aware, build dirs ignored). Runs until interrupted — the
+    /// dev-loop companion to a one-shot `push`.
     Watch {
         /// Local directory to watch.
         local: String,
@@ -148,20 +155,24 @@ enum Cmd {
         #[arg(long, value_name = "CMD")]
         on_change: Option<String>,
     },
-    /// Print a remote file to stdout (UTF-8, lossy). For binary or to save a
-    /// copy, use `pull`.
+    /// Print a remote file to stdout (UTF-8, lossy).
+    ///
+    /// For binary, or to save a copy, use `pull`.
     Cat {
         /// File path on the runner.
         remote: String,
     },
-    /// List remote processes (Id, name, working-set MB), heaviest first. An
-    /// optional substring filters by process name.
+    /// List remote processes (Id, name, working-set MB), heaviest first.
+    ///
+    /// An optional substring filters by process name.
     Ps {
         /// Only show processes whose name contains this (case-insensitive).
         pattern: Option<String>,
     },
-    /// Kill a remote process by PID (all digits) or by name (`-Force`). A name
-    /// kills every matching process.
+    /// Kill a remote process by PID or name (`--dry-run` to preview).
+    ///
+    /// By PID (all digits) or by name (`-Force`); a name kills every matching
+    /// process.
     Kill {
         /// PID (all digits) or process name (with or without `.exe`).
         process: String,
@@ -181,8 +192,10 @@ enum Cmd {
         #[arg(short = 'f', long)]
         follow: bool,
     },
-    /// Capture a screenshot to a file. Encoding follows the file extension
-    /// (`.png` → PNG, else WebP) — no client-side conversion needed.
+    /// Screenshot to a file; `--element` one control, `--baseline` regression-diff.
+    ///
+    /// Encoding follows the file extension (`.png` → PNG, else WebP) — no
+    /// client-side conversion needed.
     Screencap {
         /// Output file path (`.png` or `.webp`).
         out: String,
@@ -203,9 +216,11 @@ enum Cmd {
         #[arg(long, default_value_t = 0.1)]
         threshold: f64,
     },
-    /// One-shot "verify the UI": optionally launch an app, find its window, wait
-    /// for it to render (two stable frames), and screenshot it. Replaces the
-    /// open → blind-sleep → windows → grep → screencap dance.
+    /// One-shot "verify the UI": launch/find a window, wait for render, screenshot.
+    ///
+    /// Optionally launch an app, find its window, wait for it to render (two
+    /// stable frames), activate it, and screenshot. Replaces the open →
+    /// blind-sleep → windows → grep → screencap dance.
     Shot {
         /// Output file (`.png` or `.webp`).
         out: String,
@@ -222,8 +237,10 @@ enum Cmd {
         #[arg(long, default_value_t = 15)]
         wait: u64,
     },
-    /// List top-level windows. Text is `handle | process | title`; `--json` emits
-    /// structured records (handle, title, process, focused, rect).
+    /// List top-level windows (`--json` for records, `--filter <substr>`).
+    ///
+    /// Text is `handle | process | title`; `--json` emits structured records
+    /// (handle, title, process, focused, rect).
     Windows {
         /// Emit JSON instead of pipe-delimited text.
         #[arg(long)]
@@ -233,8 +250,10 @@ enum Cmd {
         #[arg(long)]
         filter: Option<String>,
     },
-    /// List a window's UI Automation elements. `--json` emits structured records
-    /// (id, control_type, name, automation_id, value, rect, actionable).
+    /// List a window's UI Automation elements (`--json` for structured records).
+    ///
+    /// `--json` records: id, control_type, name, automation_id, value, rect,
+    /// actionable.
     Elements {
         /// Window handle (from `windows`).
         window: u64,
@@ -242,8 +261,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Find elements in a window by attribute (no full-tree dump). Prints the
-    /// matches as `id | control_type | actionable? | automation_id | name`.
+    /// Find elements in a window by attribute (no full-tree dump).
+    ///
+    /// Prints matches as `id | control_type | actionable? | automation_id | name`
+    /// (`--json` for structured records).
     Find {
         /// Window handle (from `windows`).
         window: u64,
@@ -266,8 +287,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Wait until an element matching the query appears (polls the runner), then
-    /// print it. Exits non-zero on timeout. Same filters as `find`.
+    /// Wait until a matching element appears, then print it (same filters as `find`).
+    ///
+    /// Polls the runner; exits non-zero on timeout.
     Wait {
         /// Window handle (from `windows`).
         window: u64,
@@ -293,9 +315,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Launch an application by path or name. Arguments after it (including
-    /// `--flags`) pass through to the app: `arc open notepad C:\x.txt`,
-    /// `arc open myapp.exe --port 9000`.
+    /// Launch an application by path or name (args after it pass through).
+    ///
+    /// Arguments after it (including `--flags`) pass through to the app:
+    /// `arc open notepad C:\x.txt`, `arc open myapp.exe --port 9000`.
     Open {
         /// Executable path or registered app name. (Named `app`, not `target`,
         /// to avoid colliding with the global `-t/--target` arg id.)
@@ -322,7 +345,7 @@ enum Cmd {
         /// Element id (from `elements`/`find`).
         element_id: String,
     },
-    /// Type Unicode text into the focused element.
+    /// Type Unicode text; `--into <id>` targets a control, `--paste` for long text.
     Type {
         /// The Unicode text to type.
         text: String,
@@ -335,10 +358,11 @@ enum Cmd {
         #[arg(long)]
         paste: bool,
     },
-    /// Press a key or chord — or a sequence of them: `enter`, `esc`, `f5`,
-    /// `ctrl+c`, `ctrl+shift+esc`, `alt+f4`. Modifiers (`ctrl`/`alt`/`shift`/
-    /// `win`) join the key with `+`. Multiple chords run in order on one
-    /// connection (e.g. `arc key ctrl+a delete enter`).
+    /// Press a key or chord, or a sequence (`--into` focuses an element first).
+    ///
+    /// E.g. `enter`, `esc`, `f5`, `ctrl+c`, `ctrl+shift+esc`, `alt+f4`. Modifiers
+    /// (`ctrl`/`alt`/`shift`/`win`) join the key with `+`. Multiple chords run in
+    /// order on one connection (e.g. `arc key ctrl+a delete enter`).
     Key {
         /// One or more chords, applied in order.
         #[arg(required = true)]
@@ -365,9 +389,11 @@ enum Cmd {
         #[command(subcommand)]
         action: ClipCmd,
     },
-    /// Print a complete Markdown reference of every command (generated from the
-    /// CLI itself, so it never drifts) plus agent-oriented guidance. Made for
-    /// feeding an AI agent the whole tool surface at once: `arc agents-md`.
+    /// Print a full Markdown command reference for an AI agent (`arc agents-md`).
+    ///
+    /// Generated from the CLI itself (never drifts), prefixed with agent
+    /// guidance. Feeds an agent the whole tool surface in one read; runs locally
+    /// (no runner connection). Redirect into an AGENTS.md.
     AgentsMd,
 }
 

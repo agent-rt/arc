@@ -8,10 +8,12 @@
   session-capability gotchas. Made for handing an AI agent the whole tool
   surface in one read instead of drilling into 24 `--help` screens. Runs locally
   — no runner connection. (`arc agents-md > AGENTS.md`.)
-- **Help polish** — documented previously-bare positional arguments
-  (`push`/`pull`/`watch` source/dest, `set`, `cat`, `tail`, `clip set`, `type`,
-  `elements`/`wait` filters) so both `--help` and `agents-md` describe them;
-  removed an internal note that had leaked into `activate`'s help text.
+- **Help polish** — `arc --help` now shows a tight one-line summary per command
+  with the key flags surfaced (e.g. `watch --on-change`, `screencap
+  --baseline/--element`, `type --into/--paste`, `windows --filter`, `kill
+  --dry-run`); full detail still lives in `arc <cmd> --help`. Documented
+  previously-bare positional arguments so both `--help` and `agents-md` describe
+  them, and removed an internal note that had leaked into `activate`'s help.
 
 ## 0.6.0
 
