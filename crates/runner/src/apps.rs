@@ -1,7 +1,4 @@
 //! Launching applications and enumerating top-level windows.
-//!
-//! Window enumeration reuses `xcap` (already a dependency for capture), keeping
-//! this module free of platform `unsafe`.
 
 use arc_proto::id::WindowId;
 use arc_proto::wire::{Reply, WindowInfo};
@@ -23,17 +20,111 @@ pub fn open_app(target: &str, args: &[String]) -> RemoteResult<Reply> {
     })
 }
 
-/// Enumerates top-level windows.
+/// Enumerates visible, titled top-level windows.
+#[cfg(windows)]
 pub fn list_windows() -> RemoteResult<Reply> {
-    let windows = xcap::Window::all().map_err(|e| os_error(format!("enumerate windows: {e}")))?;
-    let infos = windows
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetForegroundWindow, IsWindowVisible};
+
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+        // SAFETY: `lparam` carries the `&mut Vec<HWND>` we passed to EnumWindows.
+        let handles = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+        handles.push(hwnd);
+        true.into() // keep enumerating
+    }
+
+    let mut handles: Vec<HWND> = Vec::new();
+    // SAFETY: `collect` only dereferences the pointer we pass, valid for the call.
+    unsafe {
+        EnumWindows(
+            Some(collect),
+            LPARAM(&mut handles as *mut Vec<HWND> as isize),
+        )
+    }
+    .map_err(|e| os_error(format!("EnumWindows: {e}")))?;
+
+    // SAFETY: no preconditions.
+    let foreground = unsafe { GetForegroundWindow() };
+    let infos = handles
         .into_iter()
-        .map(|w| WindowInfo {
-            id: WindowId(u64::from(w.id())),
-            title: w.title().to_string(),
-            process: w.app_name().to_string(),
-            focused: false,
+        // SAFETY: handles came from EnumWindows this call.
+        .filter(|&h| unsafe { IsWindowVisible(h) }.as_bool())
+        .filter_map(|h| {
+            let title = window_title(h);
+            (!title.is_empty()).then(|| WindowInfo {
+                id: WindowId(h.0 as u64),
+                title,
+                process: process_name(h),
+                focused: h == foreground,
+            })
         })
         .collect();
     Ok(Reply::Windows(infos))
+}
+
+/// Reads a window's title text.
+#[cfg(windows)]
+fn window_title(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
+    // SAFETY: `hwnd` is live for this call; the buffer is sized to the reported
+    // length + 1 for the NUL.
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; len as usize + 1];
+    let written = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    String::from_utf16_lossy(&buffer[..written as usize])
+}
+
+/// Resolves the executable file name owning `hwnd` (e.g. `notepad.exe`).
+#[cfg(windows)]
+fn process_name(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::core::PWSTR;
+
+    let mut pid = 0u32;
+    // SAFETY: `hwnd` is live; `pid` receives the owning process id.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return String::new();
+    }
+    // SAFETY: querying our own session's process by id; handle closed below.
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return String::new();
+    };
+    let mut buffer = vec![0u16; 260];
+    let mut size = buffer.len() as u32;
+    // SAFETY: `handle` is a live process handle; `buffer`/`size` describe the
+    // output buffer.
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+    };
+    // SAFETY: balances OpenProcess.
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    if result.is_err() {
+        return String::new();
+    }
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    path.rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&path)
+        .to_owned()
+}
+
+#[cfg(not(windows))]
+pub fn list_windows() -> RemoteResult<Reply> {
+    Err(os_error("window enumeration is only supported on Windows".to_owned()))
 }
