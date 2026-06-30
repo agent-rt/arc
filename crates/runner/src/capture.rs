@@ -22,9 +22,19 @@ pub fn screenshot(
     settle_ms: Option<u64>,
     await_change: bool,
 ) -> RemoteResult<Reply> {
+    // Wake DWM first: on an idle session it throttles compositing, so a
+    // just-launched window's first frame can come back black until something
+    // moves. A net-zero cursor jiggle reliably kicks it (so an Agent never has
+    // to remember to nudge the mouse before a screenshot).
+    crate::input::nudge();
     let image = match settle_ms {
+        // The settle loop re-captures, so it naturally catches the post-wake frame.
         Some(ms) => capture_settled(target, ms, await_change)?,
-        None => capture(target)?,
+        // Single shot: give DWM a moment to repaint after the nudge.
+        None => {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            capture(target)?
+        }
     };
     let (width, height) = (image.width(), image.height());
 

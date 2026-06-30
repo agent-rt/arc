@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`screencap`/`shot` wake DWM before capturing** — on an idle session DWM
+  throttles compositing, so a just-launched window's first frame can come back
+  black. The runner now nudges the cursor (net-zero jiggle) before a capture, so
+  fresh windows render without the Agent having to move the mouse first.
+  (Verified: a backdrop-only Paint capture became the full UI, 918 B → 209 KB.)
 - **`arc shot`** — one-shot "verify the UI": optionally `--launch` an app (or
   find it by `--app <substr>` / `--window`), wait for it to render (the runner
   re-captures until two frames are stable, not a blind sleep — and waits for the

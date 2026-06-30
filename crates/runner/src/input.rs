@@ -92,6 +92,27 @@ fn mouse_event(flags: MOUSE_EVENT_FLAGS, data: i32) -> INPUT {
     }
 }
 
+/// Jiggles the cursor a few pixels and back (net-zero) to wake DWM out of idle
+/// throttling — on an idle/headless session a just-launched window's first
+/// composed frame can otherwise come back black. Best-effort: ignored if input
+/// isn't available (e.g. a disconnected session).
+pub fn nudge() {
+    let rel = |dx: i32| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE, // relative (no ABSOLUTE)
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let _ = send(&[rel(4), rel(-4)]);
+}
+
 /// An absolute cursor move, normalised to the primary screen's 0..65535 space.
 fn move_event(x: i32, y: i32) -> INPUT {
     // SAFETY: GetSystemMetrics has no preconditions.
