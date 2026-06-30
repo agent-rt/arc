@@ -143,7 +143,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "arc-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-net",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "arc-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-proto",
  "futures-util",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "arc-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake2",
  "ciborium",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "arc-relay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-proto",
  "axum",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "arc-runner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-net",
  "arc-proto",
