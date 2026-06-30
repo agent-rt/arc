@@ -10,8 +10,8 @@ use arc_proto::id::RequestId;
 use arc_proto::wire::{Event, Frame, Reply, Response, Shell};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 
 use crate::dispatch::{RemoteResult, os_error, timeout_error};
 
@@ -214,46 +214,88 @@ async fn stream_process(
     }
     drop(tx); // so `rx` closes once both reader tasks finish
 
-    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
-
-    // Forward chunks as they arrive.
-    loop {
-        let received = match deadline {
-            Some(at) => match timeout_at(at, rx.recv()).await {
-                Ok(chunk) => chunk,
-                Err(_) => return kill_and_timeout(out, id, &mut child, timeout_ms).await,
+    // A monitor task owns the child: it waits for the *direct* child to exit
+    // (killing it on timeout) and reports the outcome. We finish when the child
+    // exits — NOT when the pipes hit EOF — because a detached grandchild (e.g.
+    // `start "" app.exe`) inherits the pipe handles and would hold them open
+    // forever, hanging the request.
+    let (done_tx, mut done_rx) = oneshot::channel::<Outcome>();
+    tokio::spawn(async move {
+        let outcome = match timeout_ms {
+            Some(ms) => match timeout(Duration::from_millis(ms), child.wait()).await {
+                Ok(status) => Outcome::Exited(status),
+                Err(_) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    Outcome::Timeout(ms)
+                }
             },
-            None => rx.recv().await,
+            None => Outcome::Exited(child.wait().await),
         };
-        let Some((stream, chunk)) = received else {
-            break; // readers done
-        };
-        let event = match stream {
-            Stream::Stdout => Event::Stdout { id, chunk },
-            Stream::Stderr => Event::Stderr { id, chunk },
-        };
-        if out.send(Frame::Event(event)).await.is_err() {
-            return; // writer gone; stop streaming
-        }
-    }
+        let _ = done_tx.send(outcome);
+    });
 
-    // Reap the process for its exit code.
-    let status = match deadline {
-        Some(at) => match timeout_at(at, child.wait()).await {
-            Ok(status) => status,
-            Err(_) => return kill_and_timeout(out, id, &mut child, timeout_ms).await,
-        },
-        None => child.wait().await,
+    // Forward output until the child finishes (or pipes close), then drain
+    // whatever is already buffered without blocking on inherited pipe handles.
+    let outcome = loop {
+        tokio::select! {
+            biased;
+            chunk = rx.recv() => match chunk {
+                Some((stream, chunk)) => {
+                    if forward(out, id, stream, chunk).await.is_err() {
+                        return; // writer gone
+                    }
+                }
+                None => break (&mut done_rx).await.unwrap_or(Outcome::Lost),
+            },
+            res = &mut done_rx => {
+                while let Ok(Some((stream, chunk))) =
+                    timeout(Duration::from_millis(50), rx.recv()).await
+                {
+                    if forward(out, id, stream, chunk).await.is_err() {
+                        return;
+                    }
+                }
+                break res.unwrap_or(Outcome::Lost);
+            }
+        }
     };
-    let result = match status {
-        Ok(status) => Ok(Reply::CommandOutput {
+
+    let result = match outcome {
+        Outcome::Exited(Ok(status)) => Ok(Reply::CommandOutput {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: status.code(),
         }),
-        Err(e) => Err(os_error(format!("wait failed: {e}"))),
+        Outcome::Exited(Err(e)) => Err(os_error(format!("wait failed: {e}"))),
+        Outcome::Timeout(ms) => Err(timeout_error(format!("exceeded {ms} ms"))),
+        Outcome::Lost => Err(os_error("child monitor task ended unexpectedly".to_owned())),
     };
     let _ = out.send(done(id, result)).await;
+}
+
+/// Outcome of waiting on a streamed child process.
+enum Outcome {
+    /// The direct child exited with this status.
+    Exited(std::io::Result<std::process::ExitStatus>),
+    /// The deadline (`ms`) elapsed and the child was killed.
+    Timeout(u64),
+    /// The monitor task vanished before reporting (should not happen).
+    Lost,
+}
+
+/// Sends one output chunk as an [`Event`]; `Err` means the writer is gone.
+async fn forward(
+    out: &mpsc::Sender<Frame>,
+    id: RequestId,
+    stream: Stream,
+    chunk: String,
+) -> Result<(), ()> {
+    let event = match stream {
+        Stream::Stdout => Event::Stdout { id, chunk },
+        Stream::Stderr => Event::Stderr { id, chunk },
+    };
+    out.send(Frame::Event(event)).await.map_err(|_| ())
 }
 
 /// Reads a child stream in chunks, forwarding lossily-decoded text.
@@ -274,20 +316,6 @@ async fn pump<R: AsyncReadExt + Unpin>(
             }
         }
     }
-}
-
-/// Kills the child and emits a terminal timeout response.
-async fn kill_and_timeout(
-    out: &mpsc::Sender<Frame>,
-    id: RequestId,
-    child: &mut tokio::process::Child,
-    timeout_ms: Option<u64>,
-) {
-    let _ = child.start_kill();
-    let ms = timeout_ms.unwrap_or(0);
-    let _ = out
-        .send(done(id, Err(timeout_error(format!("exceeded {ms} ms")))))
-        .await;
 }
 
 fn done(id: RequestId, result: RemoteResult<Reply>) -> Frame {

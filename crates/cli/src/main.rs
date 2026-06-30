@@ -187,10 +187,15 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         timeout: u64,
     },
-    /// Launch an application by path or name.
+    /// Launch an application by path or name. Arguments after it (including
+    /// `--flags`) pass through to the app: `arc open notepad C:\x.txt`,
+    /// `arc open myapp.exe --port 9000`.
     Open {
-        target: String,
-        #[arg(trailing_var_arg = true)]
+        /// Executable path or registered app name. (Named `app`, not `target`,
+        /// to avoid colliding with the global `-t/--target` arg id.)
+        app: String,
+        /// Arguments passed to the launched app.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Click a UI element by its id (from `elements`).
@@ -424,7 +429,7 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await;
         }
-        Cmd::Open { target, args } => open(&mut controller, target, args).await?,
+        Cmd::Open { app, args } => open(&mut controller, app, args).await?,
         Cmd::Click { element_id } => {
             ack(
                 &mut controller,
@@ -1228,9 +1233,9 @@ fn print_element(e: &ElementInfo) {
     );
 }
 
-async fn open(controller: &mut Controller, target: String, args: Vec<String>) -> Result<()> {
+async fn open(controller: &mut Controller, app: String, args: Vec<String>) -> Result<()> {
     match controller
-        .request(Command::OpenApp { target, args })
+        .request(Command::OpenApp { target: app, args })
         .await?
     {
         Reply::AppOpened { window, pid } => {

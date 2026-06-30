@@ -106,6 +106,13 @@ as tools. Long builds stream back as progress.
   coordinate `mouse`, and full-screen `screencap` need an **active** console/RDP
   session (they use `SendInput`/DXGI). The runner runs in your interactive
   session precisely so these work.
+- **Launching apps vs running commands.** `arc shell` runs a command to
+  completion and streams its output — use it for builds, tests, scripts. To
+  launch a GUI app, use `arc open <exe> [-- args]`: it returns immediately and
+  doesn't tie a connection to the app's lifetime. (`arc shell 'start "" app'`
+  instead keeps the command open for as long as the app holds the inherited
+  console — prefer `arc open`.) Either way, the runner serves connections
+  concurrently, so a long or stuck command never blocks other operations.
 - **No port forwarding.** With Tailscale, the runner binds its tailnet IP and the
   Mac dials it directly — gate access with Tailscale ACLs.
 - **Updating the runner:** `arc-runner upgrade` (downloads the latest release,

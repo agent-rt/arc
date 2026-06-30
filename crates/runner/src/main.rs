@@ -533,18 +533,25 @@ async fn listen_loop(
                 continue;
             }
         };
-        if trust && !authorize_tailnet(&peer.ip().to_string(), allow_logins).await {
-            continue; // identity check failed; reason already logged
-        }
-        tracing::info!(%peer, "controller connecting");
-        match Session::accept_direct(stream, pairing).await {
-            Ok(session) => {
-                tracing::info!("link established");
-                serve(session).await;
-                tracing::info!("link closed");
+        // Serve each controller in its own task: authorize, handshake, and serve
+        // off the accept loop so one slow or hung connection never blocks new
+        // controllers (each `arc` command is a fresh connection).
+        let pairing = pairing.clone();
+        let allow = allow_logins.to_vec();
+        tokio::spawn(async move {
+            if trust && !authorize_tailnet(&peer.ip().to_string(), &allow).await {
+                return; // identity check failed; reason already logged
             }
-            Err(e) => tracing::warn!(%e, "handshake failed"),
-        }
+            tracing::info!(%peer, "controller connecting");
+            match Session::accept_direct(stream, &pairing).await {
+                Ok(session) => {
+                    tracing::info!("link established");
+                    serve(session).await;
+                    tracing::info!("link closed");
+                }
+                Err(e) => tracing::warn!(%e, "handshake failed"),
+            }
+        });
     }
 }
 
