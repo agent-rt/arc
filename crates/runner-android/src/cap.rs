@@ -44,6 +44,22 @@ async fn run(program: &str, args: &[&str]) -> Result<Vec<u8>, RemoteError> {
     Ok(output.stdout)
 }
 
+/// Runs a shell command via `sh -c` and captures its output.
+pub async fn run_command(script: &str) -> Result<Reply, RemoteError> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| os(format!("spawn sh failed: {e}")))?;
+    Ok(Reply::CommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code(),
+    })
+}
+
 /// `screencap -p` → a full-screen PNG; dimensions parsed from the PNG header.
 pub async fn screenshot(target: CaptureTarget) -> Result<Reply, RemoteError> {
     if !matches!(target, CaptureTarget::FullScreen) {

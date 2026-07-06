@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/net", "crates/relay", "crates/runner", "crates/cli", "crates/capture", "crates/runner-android"]
+members = ["crates/proto", "crates/net", "crates/relay", "crates/runner", "crates/cli", "crates/capture", "crates/runner-core", "crates/runner-android"]
 
 [workspace.package]
 edition = "2024"
@@ -13,6 +13,7 @@ rust-version = "1.96"
 arc-proto = { path = "crates/proto" }
 arc-net = { path = "crates/net" }
 arc-capture = { path = "crates/capture" }
+arc-runner-core = { path = "crates/runner-core" }
 serde = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 thiserror = "2"

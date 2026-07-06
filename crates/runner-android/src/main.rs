@@ -14,14 +14,14 @@
 //! arc --direct 127.0.0.1:8787 --pairing TEST-1234 shell 'uname -a'
 //! ```
 
+mod backend;
 mod cap;
-
-use std::process::Stdio;
 
 use anyhow::{Context, Result, anyhow};
 use arc_net::Session;
 use arc_proto::id::PairingCode;
-use arc_proto::wire::{Command, Frame, RemoteError, RemoteErrorKind, Reply, Response};
+use arc_proto::wire::{Frame, Response};
+use backend::AndroidBackend;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -70,14 +70,21 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Serves one controller connection: each request → a single response.
+/// Serves one controller connection: each request → a single response, mapped by
+/// the shared dispatcher against the Android backend. (No streaming or port
+/// forwarding in the MVP — those are serve-loop features to add later.)
 async fn serve(session: Session) {
     let (mut writer, mut reader) = session.split();
     loop {
         match reader.recv_frame().await {
             Ok(Some(Frame::Request(request))) => {
                 tracing::info!(id = %request.id, "handling request");
-                let result = handle(request.command).await;
+                let result = arc_runner_core::dispatch::dispatch(
+                    &AndroidBackend,
+                    request.id,
+                    request.command,
+                )
+                .await;
                 if writer
                     .send_frame(&Frame::Response(Response {
                         id: request.id,
@@ -97,46 +104,4 @@ async fn serve(session: Session) {
             }
         }
     }
-}
-
-/// Maps a command to an Android capability. MVP: shell only; the rest return a
-/// structured error so the controller sees a clear "not implemented" instead of
-/// a dropped link.
-async fn handle(command: Command) -> Result<Reply, RemoteError> {
-    match command {
-        Command::RunCommand { command, .. } => run_sh(&command).await,
-        Command::RunScript { content, .. } => run_sh(&content).await,
-        Command::Screenshot { target, .. } => cap::screenshot(target).await,
-        Command::Click { target } => cap::click(target).await,
-        Command::TypeText { text, .. } => cap::type_text(&text).await,
-        Command::KeyChord { modifiers, key } => cap::key_chord(&modifiers, key).await,
-        Command::ListWindows => cap::list_windows().await,
-        Command::ListElements { .. } => cap::list_elements().await,
-        Command::FindElements { query, .. } => cap::find_elements(&query).await,
-        other => Err(RemoteError {
-            kind: RemoteErrorKind::Invalid,
-            message: format!(
-                "arc-runner-android (MVP) does not implement this command yet: {other:?}"
-            ),
-        }),
-    }
-}
-
-/// Runs `script` via `sh -c` and captures its output.
-async fn run_sh(script: &str) -> Result<Reply, RemoteError> {
-    let output = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(script)
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|e| RemoteError {
-            kind: RemoteErrorKind::Os,
-            message: format!("spawn sh failed: {e}"),
-        })?;
-    Ok(Reply::CommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        exit_code: output.status.code(),
-    })
 }

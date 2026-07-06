@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Host-buildable crates (arc-runner is Windows-only: xcap / windows-rs).
-CRATES := "-p arc-proto -p arc-net -p arc-relay -p arc-cli -p arc-runner-android"
+CRATES := "-p arc-proto -p arc-net -p arc-relay -p arc-cli -p arc-runner-core -p arc-runner-android"
 
 # Default: show available recipes.
 default:

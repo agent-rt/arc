@@ -1,0 +1,13 @@
+[package]
+name = "arc-runner-core"
+description = "Shared runner core: the Backend capability trait, command dispatch, and OS-agnostic file transfer."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arc-proto.workspace = true
+tokio.workspace = true
+blake2.workspace = true

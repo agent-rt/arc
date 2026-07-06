@@ -211,10 +211,20 @@ dependencies = [
  "anyhow",
  "arc-net",
  "arc-proto",
+ "arc-runner-core",
  "roxmltree",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "arc-runner-core"
+version = "0.8.0"
+dependencies = [
+ "arc-proto",
+ "blake2",
+ "tokio",
 ]
 
 [[package]]
