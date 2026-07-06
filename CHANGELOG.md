@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.8.0
+
+Remote reach, hang/crash diagnostics, artifact sync, and forward-compatible
+protocol negotiation. Adds `Forward` and `ProcDump` commands (plus additive,
+serde-default fields), so upgrade a 0.7.x runner (`arc-runner upgrade`). From
+this release on, a runner answers an unknown (newer) command with a clear
+"upgrade" error instead of dropping the connection.
+
+- **`arc forward <localport>:<remoteport>`** (or `<localport>:<host>:<remoteport>`)
+  — tunnel a local TCP port to the runner over the encrypted link (adb/ssh `-L`
+  style); reach a dev server, API, or debugger port bound to the box's localhost.
+  Direct (Tailscale) mode recommended.
+- **`arc procdump <pid>`** — write a minidump (thread stacks + modules) on the box
+  and pull it back; open it locally in WinDbg/cdb with symbols. For diagnosing a
+  hung process.
+- **`arc whoami`** — account, integrity level, admin, and session at a glance.
+- **`arc doctor`** — self-check: link, identity, session-activity tier, and a UIA
+  smoke count, interpreting which capabilities work right now (UIA + per-window
+  capture work disconnected; raw input + full-screen capture need an Active
+  session).
+- **`arc push --no-ignore` / `arc watch --no-ignore`** — include `.gitignore`'d
+  files and build dirs to ship build artifacts (`.git` is always excluded).
+- **`arc pull --watch [--interval N]`** — poll the runner and pull changes as they
+  appear (build on the box, artifacts flow back). **`arc pull --no-ignore`** fetches
+  from build dirs like `target/`.
+- **Capability negotiation** — an unknown command from a newer controller now
+  returns a clear "unsupported — upgrade the runner" error with the link intact,
+  instead of a mysterious connection reset.
+- **Code signing prep** — added `LICENSE-MIT` / `LICENSE-APACHE`, a code signing
+  policy (`docs/CODE_SIGNING.md`), and a gated SignPath signing step in the
+  release workflow (inert until configured).
+
 ## 0.7.0
 
 Agent dev-loop improvements from real Windows usage (driving a WinUI 3 build
