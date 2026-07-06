@@ -107,15 +107,41 @@ pub(crate) async fn open(
     controller: &mut Controller,
     app: String,
     args: Vec<String>,
-) -> Result<()> {
+    watch_ms: Option<u64>,
+) -> Result<i32> {
     match controller
-        .request(Command::OpenApp { target: app, args })
+        .request(Command::OpenApp {
+            target: app,
+            args,
+            watch_ms,
+        })
         .await?
     {
-        Reply::AppOpened { window, pid } => {
-            println!("launched pid={pid} window={window:?}");
-            Ok(())
-        }
+        Reply::AppOpened {
+            window,
+            pid,
+            exit_code,
+            diagnostic,
+        } => match exit_code {
+            // Still running after the launch grace window — the normal case.
+            None => {
+                println!("launched pid={pid} window={window:?}");
+                Ok(0)
+            }
+            // Exited cleanly during the grace window (e.g. a short-lived tool).
+            Some(0) => {
+                println!("launched pid={pid}, then exited (code 0)");
+                Ok(0)
+            }
+            // Crashed/exited abnormally on startup — surface the code + why.
+            Some(code) => {
+                eprintln!("arc: launched pid={pid} but it exited with code {code}");
+                if let Some(d) = diagnostic {
+                    eprintln!("--- most recent Application error event ---\n{d}");
+                }
+                Ok(code)
+            }
+        },
         other => bail!("unexpected reply: {other:?}"),
     }
 }

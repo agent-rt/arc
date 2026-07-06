@@ -24,20 +24,41 @@ fn piped(builder: &mut Command) {
         .kill_on_drop(true);
 }
 
+/// Prepends console-encoding setup so non-ASCII output isn't mangled by the
+/// host's legacy code page. Windows PowerShell 5.1 and cmd default their console
+/// to the OS ANSI/OEM code page (e.g. GBK on a Chinese install, 932 on Japanese),
+/// so a UTF-8 world sees mojibake in both directions. Forcing UTF-8 (65001) plus
+/// setting `[Console]::OutputEncoding` makes the interpreter's *and* its child
+/// processes' output decodable as UTF-8 on our side. The `[Console]` assignment
+/// is wrapped in `try/catch` because it throws when no console is attached; the
+/// `$OutputEncoding` variable (governing pipes to native tools) always applies.
+fn utf8_prefixed(shell: Shell, command: &str) -> String {
+    match shell {
+        Shell::PowerShell => format!(
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+             try {{ [Console]::OutputEncoding = [Console]::InputEncoding = $OutputEncoding }} catch {{}}; \
+             chcp 65001 > $null; {command}"
+        ),
+        Shell::Cmd => format!("chcp 65001 > nul & {command}"),
+    }
+}
+
 /// Builds the process for an inline command string with piped stdio.
-fn build(shell: Shell, command: &str) -> Command {
+fn build(shell: Shell, command: &str, env: &[(String, String)]) -> Command {
+    let command = utf8_prefixed(shell, command);
     let mut builder = match shell {
         Shell::PowerShell => {
             let mut c = Command::new("powershell");
-            c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+            c.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
             c
         }
         Shell::Cmd => {
             let mut c = Command::new("cmd");
-            c.args(["/C", command]);
+            c.args(["/C", &command]);
             c
         }
     };
+    builder.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     piped(&mut builder);
     builder
 }
@@ -55,14 +76,27 @@ fn script_ext(shell: Shell) -> &'static str {
 fn write_temp_script(id: RequestId, shell: Shell, content: &str) -> std::io::Result<PathBuf> {
     let mut path = std::env::temp_dir();
     path.push(format!("arc-run-{id}.{}", script_ext(shell)));
-    std::fs::write(&path, content)?;
+    // Windows PowerShell 5.1 decodes a BOM-less `.ps1` as the system ANSI code
+    // page (e.g. GBK), so a UTF-8 script's non-ASCII bytes mojibake — and a
+    // stray byte can even desync the parser (`missing terminator '`). A UTF-8
+    // BOM forces it to read the file as UTF-8. cmd reads `.bat` as the OEM code
+    // page and a BOM would corrupt the first line, so only PowerShell gets one.
+    match shell {
+        Shell::PowerShell => {
+            let mut bytes = Vec::with_capacity(content.len() + 3);
+            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            bytes.extend_from_slice(content.as_bytes());
+            std::fs::write(&path, bytes)?;
+        }
+        Shell::Cmd => std::fs::write(&path, content)?,
+    }
     Ok(path)
 }
 
 /// Builds the process that runs the script at `path` with `args`. PowerShell
 /// runs with `-ExecutionPolicy Bypass -File` so no policy blocks it and `args`
 /// bind to the script's `param()`; cmd runs it via `/C`.
-fn build_script(shell: Shell, path: &Path, args: &[String]) -> Command {
+fn build_script(shell: Shell, path: &Path, args: &[String], env: &[(String, String)]) -> Command {
     let mut builder = match shell {
         Shell::PowerShell => {
             let mut c = Command::new("powershell");
@@ -82,6 +116,7 @@ fn build_script(shell: Shell, path: &Path, args: &[String]) -> Command {
             c
         }
     };
+    builder.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     piped(&mut builder);
     builder
 }
@@ -94,9 +129,10 @@ fn build_script(shell: Shell, path: &Path, args: &[String]) -> Command {
 pub async fn run_command(
     shell: Shell,
     command: &str,
+    env: &[(String, String)],
     timeout_ms: Option<u64>,
 ) -> RemoteResult<Reply> {
-    capture_process(build(shell, command), timeout_ms).await
+    capture_process(build(shell, command, env), timeout_ms).await
 }
 
 /// Writes `content` to a temp script, runs it with `args` (buffered), and
@@ -106,13 +142,76 @@ pub async fn run_script(
     shell: Shell,
     content: &str,
     args: &[String],
+    env: &[(String, String)],
     timeout_ms: Option<u64>,
 ) -> RemoteResult<Reply> {
     let path = write_temp_script(id, shell, content)
         .map_err(|e| os_error(format!("writing temp script: {e}")))?;
-    let result = capture_process(build_script(shell, &path, args), timeout_ms).await;
+    let result = capture_process(build_script(shell, &path, args, env), timeout_ms).await;
     let _ = tokio::fs::remove_file(&path).await;
     result
+}
+
+/// Launches a script **detached**: writes it to a temp file, spawns it with
+/// stdout+stderr redirected to a sibling `.log` file, and returns immediately
+/// with the pid and log path. Uses [`std::process`] (not tokio) so the child is
+/// never killed on drop — dropping the handle below leaves it running, writing
+/// to the log, after this request (and even the connection) ends. The temp
+/// script and log are intentionally left on the runner: the process reads the
+/// script and keeps writing the log after we return. Follow-up is via `tail`
+/// (log) and `ps`/`kill` (pid).
+pub fn run_detached(
+    id: RequestId,
+    shell: Shell,
+    content: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> RemoteResult<Reply> {
+    let script = write_temp_script(id, shell, content)
+        .map_err(|e| os_error(format!("writing temp script: {e}")))?;
+    let mut log_path = std::env::temp_dir();
+    log_path.push(format!("arc-detach-{id}.log"));
+    let log = std::fs::File::create(&log_path)
+        .map_err(|e| os_error(format!("creating log {}: {e}", log_path.display())))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| os_error(format!("cloning log handle: {e}")))?;
+
+    let mut builder = match shell {
+        Shell::PowerShell => {
+            let mut c = std::process::Command::new("powershell");
+            c.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ]);
+            c.arg(&script).args(args);
+            c
+        }
+        Shell::Cmd => {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/C").arg(&script).args(args);
+            c
+        }
+    };
+    builder
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+
+    let child = builder
+        .spawn()
+        .map_err(|e| os_error(format!("spawn failed: {e}")))?;
+    let pid = child.id();
+    // Drop `child` without waiting: std's Child does not kill on drop, so the
+    // process detaches and runs on, redirected to the log file.
+    Ok(Reply::Detached {
+        pid,
+        log_path: log_path.to_string_lossy().into_owned(),
+    })
 }
 
 /// Spawns `builder`, capturing stdout/stderr into a single [`Reply`].
@@ -159,9 +258,10 @@ pub async fn run_command_streaming(
     id: RequestId,
     shell: Shell,
     command: &str,
+    env: &[(String, String)],
     timeout_ms: Option<u64>,
 ) {
-    stream_process(out, id, build(shell, command), timeout_ms).await;
+    stream_process(out, id, build(shell, command, env), timeout_ms).await;
 }
 
 /// Writes `content` to a temp script, streams its output, then deletes the
@@ -172,6 +272,7 @@ pub async fn run_script_streaming(
     shell: Shell,
     content: &str,
     args: &[String],
+    env: &[(String, String)],
     timeout_ms: Option<u64>,
 ) {
     let path = match write_temp_script(id, shell, content) {
@@ -183,7 +284,7 @@ pub async fn run_script_streaming(
             return;
         }
     };
-    stream_process(out, id, build_script(shell, &path, args), timeout_ms).await;
+    stream_process(out, id, build_script(shell, &path, args, env), timeout_ms).await;
     let _ = tokio::fs::remove_file(&path).await;
 }
 

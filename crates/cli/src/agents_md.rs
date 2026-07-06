@@ -30,11 +30,27 @@ and `ARC_*` env vars override per field.
 ## Core workflows
 
 - **Run a command / build:** `arc shell --cmd 'dotnet build'` (streams live). For
-  a local script, `arc run ./fix.ps1` (ships its contents — no quoting).
+  a local script, `arc run ./fix.ps1` (ships its contents — no quoting). To run a
+  multi-line script with **no file and no escaping**, pipe it via stdin:
+  `arc run --lang ps1 - <<'EOF'` … `EOF` (flags must precede `-`).
+- **Pass secrets/config:** `arc shell --env KEY=VAL …` / `--env-file f` (also on
+  `arc run`) injects into the process environment, never the command line — the
+  safe way to feed a token or password.
 - **Inner dev loop:** `arc watch ./src C:/work/src --on-change 'cargo build'` —
   auto-syncs on save and rebuilds on the box, output streaming.
+- **Long tasks (installer, restore):** `arc run --detach <script>` returns a pid +
+  log path immediately instead of blocking; follow with `arc tail -f <log>`,
+  manage with `arc ps` / `arc kill <pid>`. The job outlives the connection.
+- **Debug via log files:** have the program write a detailed log, then read it
+  back with `arc tail -f C:/…/app.log` (or `arc cat`). Reading the program's own
+  log is the most reliable way to pin down where something hangs or fails —
+  reach for it before trying to inspect runtime state.
+- **Diagnose a hang:** `arc ps --cpu <name>` adds an instantaneous CPU% column —
+  a spinning process reads high, a thread blocked (e.g. on I/O) reads ~0%. Tells
+  a busy loop from a deadlock/wait.
 - **See the UI:** `arc shot ui.png --app <substr>` launches/finds the window,
-  waits for it to render, activates it, and screenshots — one shot. Or
+  waits for it to render, activates it, and screenshots — one shot (with
+  `--launch`, it fails fast if the process exits before a window appears). Or
   `arc screencap out.png --window <hwnd>`.
 - **Inspect the UI tree:** `arc windows --json` → pick a handle →
   `arc elements <hwnd> --json` or `arc find <hwnd> --type Button --name Save`.
@@ -46,14 +62,32 @@ and `ARC_*` env vars override per field.
 
 ## Gotchas (read these)
 
-- **Launch GUI apps with `arc open <exe>`, not `arc shell 'start ...'`** — `open`
-  returns immediately; a `shell` start can hang on the pipe.
+- **Launch GUI apps with `arc open <exe>`, not `arc shell 'start ...'`** — a
+  `shell` start can hang on the pipe. `open` briefly watches the process: if it
+  crashes on startup it reports the exit code + the matching Application error
+  event (faulting module + exception code) and exits non-zero, instead of looking
+  like a success. Raise `--watch <ms>` for a slow (WER-mediated) crash, or `0` to
+  not wait.
+- **`arc shell` (no `--cmd`) already *is* PowerShell — write PowerShell directly.**
+  Don't wrap it in `powershell -Command "…"`: the outer shell then expands your
+  `$vars` first, so `$src` / `$_` / `$env:X` arrive empty. Just
+  `arc shell '$x=42; Write-Output $x'`. (arc passes the command verbatim — it does
+  no variable substitution of its own.)
+- **`arc shell --cmd` runs through cmd.exe** — nested quotes, pipes, and
+  PowerShell one-liners get mangled by cmd parsing. For anything quote-heavy or
+  multi-line, use `arc run` (ships the script as data, no shell to escape).
+- **The runner usually runs elevated (admin).** A build or launch that works via
+  arc can still fail for a normal user — Defender/AV scanning an unsigned exe,
+  UAC, code-signing, sandboxing. Verify distribution/install/subprocess features
+  at real-user privilege before calling them done.
 - **Session-capability tiers:** UIA paths (`windows`/`elements`/`find`/`click`/
   `set`/`read`) and per-window `screencap`/`shot` work **even when RDP is
   disconnected**. Raw input (`type`/`key`/`mouse`) and **full-screen** capture
   need an **active** session (connected RDP, or a console/virtual display).
 - **A minimized window captures as a sliver** — `arc activate <hwnd>` first (or
   use `shot`, which activates automatically).
+- **Output and scripts are UTF-8.** Non-ASCII (e.g. 中文 / 日本語) in commands,
+  script contents, and output is handled correctly — no need to stick to ASCII.
 - **Most list commands take `--json`** for structured output instead of text.
 - **Verify with `arc read <id>`** instead of screenshotting when you just need a
   control's text — far cheaper.

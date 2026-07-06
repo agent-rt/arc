@@ -7,19 +7,91 @@ use arc_proto::wire::{Reply, WindowInfo};
 
 use crate::dispatch::{RemoteResult, os_error};
 
+/// Default window to watch a freshly-launched process for a startup crash when
+/// the caller doesn't specify one. A fast loader/init failure (missing DLL, bad
+/// image) dies well within this; a healthy GUI app is still running after it.
+#[cfg(windows)]
+const DEFAULT_LAUNCH_WATCH_MS: u64 = 800;
+
 /// Launches an application, returning its process id.
 ///
-/// The main window is not resolved synchronously (apps surface windows
+/// Watches the child for up to `watch_ms` (`None` → [`DEFAULT_LAUNCH_WATCH_MS`],
+/// `0` → don't wait): if it exits within it, the launch is reported as a startup
+/// crash — [`Reply::AppOpened::exit_code`] is filled and, on abnormal exit,
+/// [`Reply::AppOpened::diagnostic`] carries the most recent matching Application
+/// error event. A process still running when the window elapses is left running
+/// (dropping the handle doesn't kill it) and reported with `exit_code: None`. The
+/// main window is not resolved synchronously (apps surface windows
 /// asynchronously); callers can follow up with [`list_windows`].
-pub fn open_app(target: &str, args: &[String]) -> RemoteResult<Reply> {
-    let child = std::process::Command::new(target)
+pub fn open_app(target: &str, args: &[String], watch_ms: Option<u64>) -> RemoteResult<Reply> {
+    #[allow(unused_mut)]
+    let mut child = std::process::Command::new(target)
         .args(args)
         .spawn()
         .map_err(|e| os_error(format!("failed to launch '{target}': {e}")))?;
+    let pid = child.id();
+
+    #[cfg(windows)]
+    {
+        let watch = std::time::Duration::from_millis(watch_ms.unwrap_or(DEFAULT_LAUNCH_WATCH_MS));
+        let start = std::time::Instant::now();
+        while !watch.is_zero() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let exit_code = status.code();
+                    // Only an abnormal (non-zero) exit is worth an event-log dig.
+                    let diagnostic = match exit_code {
+                        Some(0) => None,
+                        _ => recent_app_error(target),
+                    };
+                    return Ok(Reply::AppOpened {
+                        window: None,
+                        pid,
+                        exit_code,
+                        diagnostic,
+                    });
+                }
+                Ok(None) if start.elapsed() < watch => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                _ => break, // still running, or wait errored — treat as launched
+            }
+        }
+    }
+    let _ = watch_ms; // consumed only on Windows
+
     Ok(Reply::AppOpened {
         window: None,
-        pid: child.id(),
+        pid,
+        exit_code: None,
+        diagnostic: None,
     })
+}
+
+/// Looks up the most recent Application-log **Error** event (last 30s) whose
+/// message mentions `exe`'s file name — the faulting-module + exception-code
+/// record Windows writes when a process crashes. Best-effort: any failure (no
+/// matching event, `Get-WinEvent` unavailable) yields `None`.
+#[cfg(windows)]
+fn recent_app_error(exe: &str) -> Option<String> {
+    let name = std::path::Path::new(exe)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(exe)
+        .replace('\'', "''");
+    let query = format!(
+        "$ErrorActionPreference='SilentlyContinue'; \
+         Get-WinEvent -FilterHashtable @{{LogName='Application'; Level=2; \
+         StartTime=(Get-Date).AddSeconds(-30)}} -MaxEvents 20 | \
+         Where-Object {{ $_.Message -match [regex]::Escape('{name}') }} | \
+         Select-Object -First 1 -ExpandProperty Message"
+    );
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+        .output()
+        .ok()?;
+    let msg = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if msg.is_empty() { None } else { Some(msg) }
 }
 
 /// Enumerates visible, titled top-level windows.

@@ -37,6 +37,7 @@ async fn main() -> Result<(), Error> {
         Command::RunCommand {
             shell: Shell::Cmd,
             command: "echo hello from windows && ver".into(),
+            env: Vec::new(),
             timeout_ms: Some(10_000),
             stream: false,
         },

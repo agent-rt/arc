@@ -61,4 +61,41 @@ mod tests {
         let back: ClientMsg = from_cbor(&bytes).expect("decode");
         assert_eq!(msg, back);
     }
+
+    // Adding a `#[serde(default)]` field to an existing struct-enum variant must
+    // stay wire-compatible in BOTH directions: an old peer (no field) decoding a
+    // new peer's frame ignores the extra field, and a new peer decoding an old
+    // frame defaults the field. Verifies ciborium encodes struct variants as
+    // field-keyed maps (tolerant), not positional arrays.
+    #[test]
+    fn added_default_field_is_wire_compatible() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        enum NewCmd {
+            Run {
+                a: u32,
+                #[serde(default)]
+                env: Vec<(String, String)>,
+            },
+        }
+        #[derive(serde::Serialize, serde::Deserialize)]
+        enum OldCmd {
+            Run { a: u32 },
+        }
+
+        // New (with env) → old peer must decode by ignoring the unknown field.
+        let new = NewCmd::Run {
+            a: 1,
+            env: vec![("K".into(), "V".into())],
+        };
+        let bytes = to_cbor(&new).expect("encode new");
+        let OldCmd::Run { a } = from_cbor::<OldCmd>(&bytes).expect("old decodes new");
+        assert_eq!(a, 1);
+
+        // Old (no env) → new peer must decode by defaulting env to empty.
+        let old = OldCmd::Run { a: 2 };
+        let bytes = to_cbor(&old).expect("encode old");
+        let NewCmd::Run { a, env } = from_cbor::<NewCmd>(&bytes).expect("new decodes old");
+        assert_eq!(a, 2);
+        assert!(env.is_empty());
+    }
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use arc_net::Controller;
 use arc_proto::id::{ElementId, WindowId};
-use arc_proto::wire::{CaptureTarget, Command, ImageFormat, Reply};
+use arc_proto::wire::{CaptureTarget, Command, ImageFormat, Reply, Shell};
 
 use crate::ack;
 
@@ -153,15 +153,20 @@ pub(crate) async fn shot(
 ) -> Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(wait);
 
+    // Track the launched PID so the window search can fail fast if it dies.
+    let mut launched_pid = None;
     if let Some(exe) = &launch {
         match controller
             .request(Command::OpenApp {
                 target: exe.clone(),
                 args: vec![],
+                // shot does its own liveness polling in find_window, so don't
+                // also block in the runner — return as soon as it's launched.
+                watch_ms: Some(0),
             })
             .await?
         {
-            Reply::AppOpened { .. } => {}
+            Reply::AppOpened { pid, .. } => launched_pid = Some(pid),
             other => bail!("unexpected reply launching {exe}: {other:?}"),
         }
     }
@@ -181,7 +186,7 @@ pub(crate) async fn shot(
                 })
             })
             .ok_or_else(|| anyhow!("pass --window <handle>, --app <substr>, or --launch <exe>"))?;
-        find_window(controller, &needle, deadline).await?
+        find_window(controller, &needle, deadline, launched_pid).await?
     };
 
     // Restore + foreground the window first: a minimized window captures as a
@@ -225,13 +230,17 @@ pub(crate) async fn shot(
 }
 
 /// Polls the window list until one matches `needle` (title or process substring,
-/// case-insensitive) or the deadline passes.
+/// case-insensitive) or the deadline passes. When `launched_pid` is set (we
+/// launched the app ourselves), it also polls that process's liveness so a crash
+/// on startup fails fast instead of burning the whole timeout.
 async fn find_window(
     controller: &mut Controller,
     needle: &str,
     deadline: std::time::Instant,
+    launched_pid: Option<u32>,
 ) -> Result<u64> {
     let needle = needle.to_lowercase();
+    let mut polls: u32 = 0;
     loop {
         if let Reply::Windows(windows) = controller.request(Command::ListWindows).await?
             && let Some(w) = windows.iter().find(|w| {
@@ -241,9 +250,45 @@ async fn find_window(
         {
             return Ok(w.id.0);
         }
+        // Liveness check is throttled (every ~2s) because each spawns a remote
+        // powershell; still far faster than waiting out the deadline on a crash.
+        // (A launcher that forks the real app and exits would false-positive
+        // here — pass --app instead of --launch for that shape.)
+        if let Some(pid) = launched_pid
+            && polls % 5 == 4
+            && !process_alive(controller, pid).await
+        {
+            bail!(
+                "launched process (PID {pid}) exited before a window matching \
+                 '{needle}' appeared — likely crashed on startup"
+            );
+        }
         if std::time::Instant::now() >= deadline {
             bail!("no window matching '{needle}' appeared within the wait");
         }
+        polls = polls.wrapping_add(1);
         tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+}
+
+/// Best-effort remote liveness check for `pid`: runs `Get-Process -Id` and maps
+/// a clean exit to "alive". Any error querying is treated as alive, so a
+/// transient hiccup never aborts a capture that would otherwise succeed.
+async fn process_alive(controller: &mut Controller, pid: u32) -> bool {
+    let command = format!(
+        "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+    );
+    match controller
+        .request(Command::RunCommand {
+            shell: Shell::PowerShell,
+            command,
+            env: Vec::new(),
+            timeout_ms: Some(10_000),
+            stream: false,
+        })
+        .await
+    {
+        Ok(Reply::CommandOutput { exit_code, .. }) => exit_code != Some(1),
+        _ => true,
     }
 }

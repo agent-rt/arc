@@ -227,6 +227,7 @@ async fn run_on_change(controller: &mut Controller, cmd: &str) {
         Command::RunCommand {
             shell: Shell::PowerShell,
             command: cmd.to_owned(),
+            env: Vec::new(),
             timeout_ms: None, // a build/test may run long; the user Ctrl+Cs the watch
             stream: true,
         },

@@ -73,6 +73,20 @@ pub struct RunScriptArgs {
     pub timeout_ms: Option<u64>,
 }
 
+/// Arguments for [`AgentRc::run_detached`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunDetachedArgs {
+    /// Script source to run detached (sent as data, so there is no quoting to
+    /// escape).
+    pub content: String,
+    /// Interpreter: `"powershell"` (default) or `"cmd"`.
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// Arguments passed through to the script.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
 /// Arguments for [`AgentRc::screenshot`].
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ScreenshotArgs {
@@ -195,6 +209,10 @@ pub struct ListProcessesArgs {
     /// Keep only processes whose name contains this (case-insensitive).
     #[serde(default)]
     pub pattern: Option<String>,
+    /// Add an instantaneous CPU% column (samples over ~500ms) to tell a busy
+    /// (spinning) process from a blocked one — useful for diagnosing hangs.
+    #[serde(default)]
+    pub cpu: bool,
 }
 
 /// Arguments for [`AgentRc::kill_process`].
@@ -257,6 +275,12 @@ pub struct OpenAppArgs {
     /// Command-line arguments.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Milliseconds to watch for a startup crash before returning: if the app
+    /// exits within it, the result reports its exit code + the matching
+    /// Application error event. Omitted = ~800ms (catches fast crashes); `0` =
+    /// return immediately; raise it for slow WER-mediated crashes.
+    #[serde(default)]
+    pub watch_ms: Option<u64>,
 }
 
 /// Arguments for [`AgentRc::read_file`].
@@ -318,6 +342,7 @@ impl AgentRc {
         let command = Command::RunCommand {
             shell,
             command: args.command,
+            env: Vec::new(),
             timeout_ms: clamp_timeout(args.timeout_ms),
             stream: true,
         };
@@ -336,10 +361,34 @@ impl AgentRc {
             shell: parse_shell(args.shell.as_deref()),
             content: args.content,
             args: args.args,
+            env: Vec::new(),
             timeout_ms: clamp_timeout(args.timeout_ms),
             stream: true,
         };
         self.stream_to_result(command, context).await
+    }
+
+    #[tool(
+        description = "Run a script detached on the remote Windows machine: it launches with output redirected to a log file on the box and returns immediately with the pid and log path, so a long task (installer, build, package restore) doesn't block the call. Read progress with tail/read_file on the log; manage with list_processes/kill_process. Prefer this over run_script for anything long-running."
+    )]
+    async fn run_detached(
+        &self,
+        Parameters(args): Parameters<RunDetachedArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .dispatch(Command::RunDetached {
+                shell: parse_shell(args.shell.as_deref()),
+                content: args.content,
+                args: args.args,
+                env: Vec::new(),
+            })
+            .await?
+        {
+            Reply::Detached { pid, log_path } => Ok(CallToolResult::success(vec![Content::text(
+                format!("detached pid={pid}\nlog: {log_path}"),
+            )])),
+            other => Err(unexpected(&other)),
+        }
     }
 
     /// Runs a streaming `command`, relaying chunks as MCP progress (when the
@@ -606,24 +655,13 @@ impl AgentRc {
     }
 
     #[tool(
-        description = "List remote processes (Id, name, working-set MB; heaviest first). Optional `pattern` keeps only processes whose name contains it (case-insensitive)."
+        description = "List remote processes (Id, name, working-set MB; heaviest first). Optional `pattern` keeps only processes whose name contains it (case-insensitive). Set cpu:true to add an instantaneous CPU% column (busy vs blocked) for hang diagnosis."
     )]
     async fn list_processes(
         &self,
         Parameters(args): Parameters<ListProcessesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let filter = match args.pattern.as_deref() {
-            Some(p) => format!(
-                " | Where-Object {{ $_.ProcessName -like '*{}*' }}",
-                p.replace('\'', "''")
-            ),
-            None => String::new(),
-        };
-        let command = format!(
-            "Get-Process{filter} | Sort-Object -Descending WS | \
-             Select-Object Id, ProcessName, @{{Name='MB';Expression={{[math]::Round($_.WS/1MB,1)}}}} | \
-             Format-Table -AutoSize | Out-String -Width 200"
-        );
+        let command = crate::exec::ps_command(args.pattern.as_deref(), args.cpu);
         self.run_ps(command).await
     }
 
@@ -790,12 +828,31 @@ impl AgentRc {
             .dispatch(Command::OpenApp {
                 target: args.target,
                 args: args.args,
+                watch_ms: args.watch_ms,
             })
             .await?
         {
-            Reply::AppOpened { window, pid } => Ok(CallToolResult::success(vec![Content::text(
-                format!("launched pid={pid} window={window:?}"),
-            )])),
+            Reply::AppOpened {
+                window,
+                pid,
+                exit_code,
+                diagnostic,
+            } => {
+                let text = match exit_code {
+                    None => format!("launched pid={pid} window={window:?}"),
+                    Some(0) => format!("launched pid={pid}, then exited (code 0)"),
+                    Some(code) => {
+                        let mut t = format!("launched pid={pid} but it exited with code {code}");
+                        if let Some(d) = diagnostic {
+                            t.push_str(&format!(
+                                "\n--- most recent Application error event ---\n{d}"
+                            ));
+                        }
+                        t
+                    }
+                };
+                Ok(CallToolResult::success(vec![Content::text(text)]))
+            }
             other => Err(unexpected(&other)),
         }
     }
@@ -871,6 +928,7 @@ impl AgentRc {
             .dispatch(Command::RunCommand {
                 shell: Shell::PowerShell,
                 command,
+                env: Vec::new(),
                 timeout_ms: Some(30_000),
                 stream: false,
             })

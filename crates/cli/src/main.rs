@@ -76,6 +76,15 @@ enum Cmd {
         /// Omitted = a default safety limit (10 min); `0` = no limit.
         #[arg(long)]
         timeout: Option<u64>,
+        /// Set an environment variable for the command as `KEY=VALUE` (repeatable).
+        /// Injected into the remote process's environment — never the command
+        /// line — so it's the safe way to pass secrets/config.
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Read `KEY=VALUE` lines from this file into the environment (`#`
+        /// comments and blank lines ignored); `--env` flags override it.
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<String>,
         /// The command and arguments (joined with spaces).
         #[arg(trailing_var_arg = true, required = true)]
         args: Vec<String>,
@@ -87,11 +96,31 @@ enum Cmd {
     /// (`-ExecutionPolicy Bypass`), `.bat`/`.cmd` → cmd. Args after the script
     /// pass through to it.
     Run {
-        /// Path to a local script file (`.ps1`, `.bat`, or `.cmd`).
+        /// Local script file (`.ps1`/`.bat`/`.cmd`), or `-` to read from stdin —
+        /// pipe a multi-line here-doc to run it with no shell quoting to escape.
         script: String,
+        /// Interpreter to use: `ps1`, `bat`, or `cmd`. Required with `-` (stdin
+        /// has no extension); overrides the extension for a file. Flags must
+        /// precede the script (e.g. `arc run --lang ps1 - <<'EOF'`).
+        #[arg(long, value_name = "ps1|bat|cmd")]
+        lang: Option<String>,
+        /// Run detached: the runner redirects output to a log file on the box and
+        /// returns a pid + log path immediately, so a long task (installer, build)
+        /// doesn't block. Follow it with `arc tail -f <log>`, manage with `ps`/
+        /// `kill`. Ignores `--timeout` (there's no connection to time out).
+        #[arg(long)]
+        detach: bool,
         /// Kill the script after this many seconds. Omitted = 10 min; `0` = no limit.
         #[arg(long)]
         timeout: Option<u64>,
+        /// Set an environment variable for the script as `KEY=VALUE` (repeatable).
+        /// Injected into the remote process's environment, not the command line.
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Read `KEY=VALUE` lines from this file into the environment (`#`
+        /// comments and blank lines ignored); `--env` flags override it.
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<String>,
         /// Arguments passed through to the script.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -160,10 +189,15 @@ enum Cmd {
     },
     /// List remote processes (Id, name, working-set MB), heaviest first.
     ///
-    /// An optional substring filters by process name.
+    /// An optional substring filters by process name. `--cpu` adds an
+    /// instantaneous CPU% column (sampled over ~500ms) to tell a spinning
+    /// process (busy) from a blocked one — useful for diagnosing hangs.
     Ps {
         /// Only show processes whose name contains this (case-insensitive).
         pattern: Option<String>,
+        /// Add an instantaneous CPU% column (samples over ~500ms, so slower).
+        #[arg(long)]
+        cpu: bool,
     },
     /// Kill a remote process by PID or name (`--dry-run` to preview).
     ///
@@ -316,6 +350,13 @@ enum Cmd {
     /// Arguments after it (including `--flags`) pass through to the app:
     /// `arc open notepad C:\x.txt`, `arc open myapp.exe --port 9000`.
     Open {
+        /// Milliseconds to watch for a startup crash before returning: if the app
+        /// exits within it, report its exit code + the matching Application error
+        /// event, and exit non-zero. `0` = don't wait. Omitted = ~800ms (catches
+        /// fast loader/init crashes; raise it for slow WER-mediated crashes).
+        /// Must precede the app (args after it pass through).
+        #[arg(long)]
+        watch: Option<u64>,
         /// Executable path or registered app name. (Named `app`, not `target`,
         /// to avoid colliding with the global `-t/--target` arg id.)
         app: String,
@@ -557,18 +598,38 @@ async fn run(cli: Cli) -> Result<i32> {
         .context("connecting to runner")?;
 
     match command {
-        Cmd::Shell { cmd, timeout, args } => {
-            return shell(&mut controller, cmd, timeout, args).await;
+        Cmd::Shell {
+            cmd,
+            timeout,
+            env,
+            env_file,
+            args,
+        } => {
+            return shell(&mut controller, cmd, timeout, env, env_file, args).await;
         }
         Cmd::Run {
             script,
+            lang,
+            detach,
             timeout,
+            env,
+            env_file,
             args,
         } => {
-            return run_script(&mut controller, &script, timeout, args).await;
+            return run_script(
+                &mut controller,
+                &script,
+                lang.as_deref(),
+                detach,
+                timeout,
+                env,
+                env_file,
+                args,
+            )
+            .await;
         }
-        Cmd::Ps { pattern } => {
-            return ps(&mut controller, pattern.as_deref()).await;
+        Cmd::Ps { pattern, cpu } => {
+            return ps(&mut controller, pattern.as_deref(), cpu).await;
         }
         Cmd::Kill { process, dry_run } => {
             return kill(&mut controller, &process, dry_run).await;
@@ -672,7 +733,7 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await;
         }
-        Cmd::Open { app, args } => open(&mut controller, app, args).await?,
+        Cmd::Open { watch, app, args } => return open(&mut controller, app, args, watch).await,
         Cmd::Activate { window } => {
             ack(
                 &mut controller,

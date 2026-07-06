@@ -62,6 +62,11 @@ pub enum Command {
         shell: Shell,
         /// The command line to execute.
         command: String,
+        /// Extra environment variables (`(NAME, VALUE)`) set for the spawned
+        /// process — a leak-free channel for secrets/config that never touches
+        /// the command line. Empty by default.
+        #[serde(default)]
+        env: Vec<(String, String)>,
         /// Optional wall-clock timeout in milliseconds.
         timeout_ms: Option<u64>,
         /// If `true`, stdout/stderr are streamed as [`Event`]s before the
@@ -83,10 +88,33 @@ pub enum Command {
         /// Arguments passed to the script (each a separate process argument).
         #[serde(default)]
         args: Vec<String>,
+        /// Extra environment variables (`(NAME, VALUE)`) set for the spawned
+        /// process — see [`Command::RunCommand::env`]. Empty by default.
+        #[serde(default)]
+        env: Vec<(String, String)>,
         /// Optional wall-clock timeout in milliseconds.
         timeout_ms: Option<u64>,
         /// If `true`, output streams as [`Event`]s before the terminal response.
         stream: bool,
+    },
+    /// Launch a script **detached**: the runner writes `content` to a temp file,
+    /// spawns it with stdout+stderr redirected to a log file on the runner (no
+    /// pipes held, not killed when the request ends), and returns immediately
+    /// with the pid and log path via [`Reply::Detached`]. A long task (installer,
+    /// package restore) thus outlives the connection instead of blocking it —
+    /// follow it with `tail` on the log and `ps`/`kill` on the pid. There is no
+    /// job registry: the detached process is an ordinary OS process.
+    RunDetached {
+        /// Which interpreter to run the script with.
+        shell: Shell,
+        /// The script source (shipped as data, like [`Command::RunScript`]).
+        content: String,
+        /// Arguments passed to the script (each a separate process argument).
+        #[serde(default)]
+        args: Vec<String>,
+        /// Extra environment variables — see [`Command::RunCommand::env`].
+        #[serde(default)]
+        env: Vec<(String, String)>,
     },
     /// Launch an application by path or registered name.
     OpenApp {
@@ -94,6 +122,14 @@ pub enum Command {
         target: String,
         /// Command-line arguments.
         args: Vec<String>,
+        /// Milliseconds to watch the launched process for a startup crash before
+        /// returning: if it exits within this window, [`Reply::AppOpened`]'s
+        /// `exit_code` (and `diagnostic` on abnormal exit) are filled. `None` uses
+        /// a default (~800ms); `0` returns immediately (fire-and-forget). A fast
+        /// loader/init crash is caught by the default; a slow WER-mediated crash
+        /// needs a larger value.
+        #[serde(default)]
+        watch_ms: Option<u64>,
     },
     /// Capture an image of the screen, a window, an element, or a region.
     Screenshot {
@@ -522,6 +558,25 @@ pub enum Reply {
         window: Option<WindowId>,
         /// OS process id.
         pid: u32,
+        /// Set if the process **already exited** within the runner's short
+        /// post-launch grace window — i.e. it crashed/exited on startup rather
+        /// than staying up. `None` means it was still running. Empty by default.
+        #[serde(default)]
+        exit_code: Option<i32>,
+        /// When the process exited abnormally, the most recent matching Windows
+        /// Application error event (faulting module + exception code), if one was
+        /// found — so a startup crash reports *why* without a manual event-log
+        /// dig. `None` otherwise.
+        #[serde(default)]
+        diagnostic: Option<String>,
+    },
+    /// Result of [`Command::RunDetached`]: the launched pid and the runner-side
+    /// log file its stdout+stderr are redirected to (read it with `tail`/`cat`).
+    Detached {
+        /// OS process id of the detached job.
+        pid: u32,
+        /// Absolute path of the log file on the runner.
+        log_path: String,
     },
     /// Contents from [`Command::ReadFile`].
     FileContents(Vec<u8>),
