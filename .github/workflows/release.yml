@@ -110,6 +110,50 @@ jobs:
           shared-key: release-windows
       - name: Build arc-runner + arc
         run: cargo build --release --locked -p arc-runner -p arc-cli
+
+      # --- Code signing via SignPath Foundation (docs/CODE_SIGNING.md) --------
+      # Inert until SignPath is configured. After the SignPath Foundation
+      # application is approved, set:
+      #   - repo variable SIGNPATH_ORGANIZATION_ID  (toggles these steps on)
+      #   - repo secret   SIGNPATH_API_TOKEN
+      # and fill the project / policy / artifact-configuration slugs below to
+      # match your SignPath.io project. Verify input names + the signed-artifact
+      # layout against the action's docs (signpath/github-action-submit-signing-request).
+      # Until configured, these steps are skipped and the release ships unsigned.
+      - name: Stage binaries for signing
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path signing-in | Out-Null
+          Copy-Item target/release/arc-runner.exe,target/release/arc.exe signing-in/
+      - name: Upload unsigned artifact
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc-windows-unsigned
+          path: signing-in/*
+      - name: Submit signing request to SignPath
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: arc # set to your SignPath project slug
+          signing-policy-slug: release-signing # set to your signing policy slug
+          artifact-configuration-slug: windows-binaries # set to your artifact config
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signing-out
+      - name: Replace with signed binaries
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        shell: pwsh
+        run: |
+          # Adjust paths if SignPath returns a nested layout.
+          Copy-Item signing-out/arc-runner.exe target/release/arc-runner.exe -Force
+          Copy-Item signing-out/arc.exe        target/release/arc.exe        -Force
+      # -----------------------------------------------------------------------
+
       - name: Package zip
         id: pkg
         shell: pwsh

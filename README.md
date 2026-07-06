@@ -216,6 +216,10 @@ the handshake gives no offline dictionary attack; a wrong code makes the Noise
 handshake fail. In `trust_tailnet` mode the boundary is Tailscale ACLs plus
 verified identity.
 
+The Windows binaries are code-signed — see the [code signing
+policy](docs/CODE_SIGNING.md) (free certificate courtesy of the
+[SignPath Foundation](https://signpath.org)).
+
 ## Build from source
 
 ```bash
@@ -237,4 +241,5 @@ crates build everywhere. Release/packaging is in [`RELEASING.md`](RELEASING.md).
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at
+your option.
