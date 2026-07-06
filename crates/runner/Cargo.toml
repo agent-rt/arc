@@ -15,10 +15,10 @@ path = "src/main.rs"
 arc-proto.workspace = true
 arc-net.workspace = true
 arc-capture.workspace = true
+arc-runner-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-blake2.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

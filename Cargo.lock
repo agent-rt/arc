@@ -193,7 +193,7 @@ dependencies = [
  "arc-capture",
  "arc-net",
  "arc-proto",
- "blake2",
+ "arc-runner-core",
  "image",
  "serde",
  "serde_json",

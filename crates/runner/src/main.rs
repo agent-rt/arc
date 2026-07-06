@@ -13,12 +13,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod apps;
+mod backend;
 mod capture;
 mod cfg;
 mod clipboard;
 mod dispatch;
 mod exec;
-mod files;
 mod input;
 mod uia;
 

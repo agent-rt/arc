@@ -1,30 +1,25 @@
-//! Maps an incoming [`Command`] to a [`Reply`] (or [`RemoteError`]) and wraps
-//! the outcome in a response [`Frame`].
-//!
-//! Capture, UI Automation and input injection are blocking, thread-affine
-//! operations, so they run on [`tokio::task::spawn_blocking`] rather than
-//! occupying an async worker.
+//! Routes a request to its reply. A streaming `RunCommand`/`RunScript`
+//! (`stream: true`) is handled here (it emits interim
+//! [`Event`](arc_proto::wire::Event)s before the terminal response); every other
+//! command goes through the shared [`arc_runner_core::dispatch`] against the
+//! [`WindowsBackend`](crate::backend::WindowsBackend). ([`Command::Forward`] is
+//! intercepted earlier still, in the serve loop.)
 
-use arc_proto::id::RequestId;
-use arc_proto::wire::{
-    ClickTarget, Command, Frame, RemoteError, RemoteErrorKind, Reply, Request, Response,
-};
+use arc_proto::wire::{Command, Frame, Request, Response};
 use tokio::sync::mpsc;
 
-use crate::{apps, capture, clipboard, exec, files, input, uia};
+use crate::backend::WindowsBackend;
+use crate::exec;
 
-/// Result alias for per-command handlers: success [`Reply`] or structured
-/// [`RemoteError`] returned to the controller.
-pub type RemoteResult<T> = Result<T, RemoteError>;
+// Re-export the shared result alias + error constructors so the capability
+// modules (`exec`/`apps`/`uia`/`input`/`capture`/`clipboard`) keep importing them
+// from here after the move into `arc-runner-core`.
+pub use arc_runner_core::{RemoteResult, not_found, os_error, timeout_error};
 
 /// Executes a request, sending its outcome frames to `out` (drained by the
 /// session writer task). Runs as its own task, so a slow command never blocks
-/// the receive loop or other in-flight commands.
-///
-/// A streaming [`Command::RunCommand`] emits interim
-/// [`Event`](arc_proto::wire::Event)s before the terminal response; every
-/// other command sends a single response. A closed `out` (writer gone) just
-/// ends the handler.
+/// the receive loop or other in-flight commands. A closed `out` (writer gone)
+/// just ends the handler.
 pub async fn handle(request: Request, out: &mpsc::Sender<Frame>) {
     let id = request.id;
     match request.command {
@@ -44,172 +39,8 @@ pub async fn handle(request: Request, out: &mpsc::Sender<Frame>) {
             stream: true,
         } => exec::run_script_streaming(out, id, shell, &content, &args, &env, timeout_ms).await,
         command => {
-            let result = dispatch_once(id, command).await;
+            let result = arc_runner_core::dispatch::dispatch(&WindowsBackend, id, command).await;
             let _ = out.send(Frame::Response(Response { id, result })).await;
         }
-    }
-}
-
-async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
-    match command {
-        Command::RunCommand {
-            shell,
-            command,
-            env,
-            timeout_ms,
-            stream: false,
-        } => exec::run_command(shell, &command, &env, timeout_ms).await,
-        Command::RunScript {
-            shell,
-            content,
-            args,
-            env,
-            timeout_ms,
-            stream: false,
-        } => exec::run_script(id, shell, &content, &args, &env, timeout_ms).await,
-        Command::RunDetached {
-            shell,
-            content,
-            args,
-            env,
-        } => blocking(move || exec::run_detached(id, shell, &content, &args, &env)).await,
-        Command::Screenshot {
-            target,
-            format,
-            settle_ms,
-            settle_await_change,
-        } => {
-            blocking(move || capture::screenshot(target, format, settle_ms, settle_await_change))
-                .await
-        }
-        Command::OpenApp {
-            target,
-            args,
-            watch_ms,
-        } => blocking(move || apps::open_app(&target, &args, watch_ms)).await,
-        Command::ProcDump { pid } => blocking(move || apps::proc_dump(pid)).await,
-        Command::ListWindows => blocking(apps::list_windows).await,
-        Command::ListElements { window } => blocking(move || uia::list_elements(window)).await,
-        Command::FindElements {
-            window,
-            query,
-            wait_ms,
-        } => blocking(move || uia::find_elements(window, &query, wait_ms)).await,
-        Command::Click { target } => blocking(move || click(target)).await,
-        Command::TypeText { text, into, paste } => {
-            blocking(move || {
-                if paste {
-                    // Clipboard paste: set the clipboard, focus the target, Ctrl+V.
-                    // Far faster/more reliable than per-key injection for long text.
-                    clipboard::set(&text)?;
-                    if let Some(element) = into {
-                        uia::focus(&element.0)?;
-                    }
-                    input::key_chord(
-                        &[arc_proto::wire::Modifier::Ctrl],
-                        arc_proto::wire::Key::Char('v'),
-                    )
-                } else {
-                    // Focus the target element first (more reliable than typing
-                    // into whatever happens to have focus), then send real keys.
-                    if let Some(element) = into {
-                        uia::focus(&element.0)?;
-                    }
-                    input::type_text(&text)
-                }
-            })
-            .await
-        }
-        Command::KeyChord { modifiers, key } => {
-            blocking(move || input::key_chord(&modifiers, key)).await
-        }
-        Command::Mouse { action } => blocking(move || input::mouse(action)).await,
-        Command::ActivateWindow { window } => blocking(move || apps::activate_window(window)).await,
-        Command::ReadElement { element } => {
-            blocking(move || uia::read_element(&element.0).map(Reply::Text)).await
-        }
-        Command::FocusElement { element } => {
-            blocking(move || uia::focus(&element.0).map(|()| Reply::Ack)).await
-        }
-        Command::ClipboardGet => blocking(|| clipboard::get().map(Reply::Text)).await,
-        Command::ClipboardSet { text } => {
-            blocking(move || clipboard::set(&text).map(|()| Reply::Ack)).await
-        }
-        Command::SetValue { element, value } => {
-            blocking(move || uia::set_value(&element.0, &value)).await
-        }
-        Command::ReadFile {
-            path,
-            offset,
-            max_len,
-        } => files::read_file(&path, offset, max_len).await,
-        Command::WriteFile {
-            path,
-            contents,
-            offset,
-        } => files::write_file(&path, &contents, offset).await,
-        Command::HashFiles { root, paths } => files::hash_files(&root, &paths).await,
-        Command::ListTree { root, all } => files::list_tree(&root, all).await,
-        Command::DeleteFile { path } => files::delete_file(&path).await,
-        // A command variant added after this runner was built: `#[serde(other)]`
-        // decoded it here instead of failing the frame, so answer with a clear,
-        // link-preserving error naming this runner's version.
-        Command::Unsupported => Err(RemoteError {
-            kind: RemoteErrorKind::Invalid,
-            message: format!(
-                "unrecognized command — this arc-runner ({}) is older than the \
-                 controller and doesn't support it; upgrade the runner \
-                 (`arc-runner upgrade`)",
-                env!("CARGO_PKG_VERSION")
-            ),
-        }),
-        // `Command` is `#[non_exhaustive]`; reject anything added upstream that
-        // this runner build does not yet implement.
-        other => Err(RemoteError {
-            kind: RemoteErrorKind::Invalid,
-            message: format!("command not implemented in this runner: {other:?}"),
-        }),
-    }
-}
-
-fn click(target: ClickTarget) -> RemoteResult<Reply> {
-    match target {
-        ClickTarget::Element(element) => uia::click_element(&element.0),
-        ClickTarget::Point { x, y, button } => input::click_point(x, y, button),
-    }
-}
-
-/// Runs a blocking handler on the blocking thread pool.
-async fn blocking<F>(f: F) -> RemoteResult<Reply>
-where
-    F: FnOnce() -> RemoteResult<Reply> + Send + 'static,
-{
-    match tokio::task::spawn_blocking(f).await {
-        Ok(result) => result,
-        Err(e) => Err(os_error(format!("worker task failed: {e}"))),
-    }
-}
-
-/// Builds an `Os`-category error.
-pub fn os_error(message: String) -> RemoteError {
-    RemoteError {
-        kind: RemoteErrorKind::Os,
-        message,
-    }
-}
-
-/// Builds a `NotFound`-category error.
-pub fn not_found(message: String) -> RemoteError {
-    RemoteError {
-        kind: RemoteErrorKind::NotFound,
-        message,
-    }
-}
-
-/// Builds a `Timeout`-category error.
-pub fn timeout_error(message: String) -> RemoteError {
-    RemoteError {
-        kind: RemoteErrorKind::Timeout,
-        message,
     }
 }
