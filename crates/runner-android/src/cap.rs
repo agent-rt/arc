@@ -60,21 +60,55 @@ pub async fn run_command(script: &str) -> Result<Reply, RemoteError> {
     })
 }
 
-/// `screencap -p` → a full-screen PNG; dimensions parsed from the PNG header.
+/// `screencap -p` → a PNG. `FullScreen`/`Window` return the whole screen
+/// (Android has one screen); `Element` crops to the element's bounds (its id
+/// encodes `l,t,r,b`).
 pub async fn screenshot(target: CaptureTarget) -> Result<Reply, RemoteError> {
-    if !matches!(target, CaptureTarget::FullScreen) {
-        return Err(invalid(
-            "android MVP captures the full screen only (window/element capture not yet supported)",
-        ));
-    }
     let data = run("screencap", &["-p"]).await?;
     let (width, height) =
         png_dimensions(&data).ok_or_else(|| os("screencap did not return a PNG".to_owned()))?;
+    match target {
+        CaptureTarget::FullScreen | CaptureTarget::Window(_) => Ok(Reply::Image(Image {
+            format: ImageFormat::Png,
+            width,
+            height,
+            data,
+        })),
+        CaptureTarget::Element(id) => crop_png(&data, parse_bounds_id(&id.0)?),
+        CaptureTarget::Region {
+            x,
+            y,
+            width,
+            height,
+        } => crop_png(
+            &data,
+            Rect {
+                x,
+                y,
+                width: width as i32,
+                height: height as i32,
+            },
+        ),
+    }
+}
+
+/// Crops the full-screen PNG to `rect` (clamped to the image) and re-encodes it.
+fn crop_png(data: &[u8], rect: Rect) -> Result<Reply, RemoteError> {
+    let img = image::load_from_memory(data).map_err(|e| os(format!("decode screenshot: {e}")))?;
+    let x = rect.x.max(0) as u32;
+    let y = rect.y.max(0) as u32;
+    let w = (rect.width.max(0) as u32).min(img.width().saturating_sub(x));
+    let h = (rect.height.max(0) as u32).min(img.height().saturating_sub(y));
+    let cropped = img.crop_imm(x, y, w, h);
+    let mut out = Vec::new();
+    cropped
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| os(format!("encode crop: {e}")))?;
     Ok(Reply::Image(Image {
         format: ImageFormat::Png,
-        width,
-        height,
-        data,
+        width: w,
+        height: h,
+        data: out,
     }))
 }
 
@@ -89,22 +123,38 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// `input tap` a point, or the centre of an element (its id encodes `cx,cy`).
+/// `input tap` a point, or the centre of an element's bounds.
 pub async fn click(target: ClickTarget) -> Result<Reply, RemoteError> {
     let (x, y) = match target {
         ClickTarget::Point { x, y, .. } => (x, y),
-        ClickTarget::Element(id) => parse_point(&id.0)?,
+        ClickTarget::Element(id) => {
+            let r = parse_bounds_id(&id.0)?;
+            (r.x + r.width / 2, r.y + r.height / 2)
+        }
     };
     run("input", &["tap", &x.to_string(), &y.to_string()]).await?;
     Ok(Reply::Ack)
 }
 
-/// Android element ids encode the tap point as `"<cx>,<cy>"` (no stable
-/// runtime id exists in a `uiautomator` dump).
-fn parse_point(id: &str) -> Result<(i32, i32), RemoteError> {
-    id.split_once(',')
-        .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
-        .ok_or_else(|| invalid(format!("malformed android element id '{id}' (want cx,cy)")))
+/// Android element ids encode the element's bounds as `"<l>,<t>,<r>,<b>"` (no
+/// stable runtime id exists in a `uiautomator` dump) — enough to both tap its
+/// centre and crop a screenshot to it.
+fn parse_bounds_id(id: &str) -> Result<Rect, RemoteError> {
+    let n: Vec<i32> = id
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    match n[..] {
+        [l, t, r, b] => Ok(Rect {
+            x: l,
+            y: t,
+            width: r - l,
+            height: b - t,
+        }),
+        _ => Err(invalid(format!(
+            "malformed android element id '{id}' (want l,t,r,b)"
+        ))),
+    }
 }
 
 /// `input text` — spaces become `%s` (what `input` expects); passed as one argv
@@ -239,10 +289,17 @@ fn parse_nodes(xml: &str) -> Result<Vec<ElementInfo>, RemoteError> {
         let control_type = class.rsplit('.').next().unwrap_or(class).to_owned();
         let text = non_empty(attr("text"));
         let desc = non_empty(attr("content-desc"));
-        let cx = rect.x + rect.width / 2;
-        let cy = rect.y + rect.height / 2;
+        // Encode bounds `l,t,r,b` in the id so it can be both tapped (centre) and
+        // captured (crop).
+        let id = format!(
+            "{},{},{},{}",
+            rect.x,
+            rect.y,
+            rect.x + rect.width,
+            rect.y + rect.height
+        );
         out.push(ElementInfo {
-            id: ElementId(format!("{cx},{cy}")),
+            id: ElementId(id),
             control_type,
             name: desc.clone(),
             automation_id: non_empty(attr("resource-id")),
