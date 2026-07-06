@@ -25,9 +25,9 @@ mod uia;
 use std::path::Path;
 use std::time::Duration;
 
-use arc_net::{Session, SessionConfig, Transport};
-use arc_proto::id::{PairingCode, Role, SessionId};
-use arc_proto::wire::Frame;
+use arc_net::{Session, SessionConfig, SessionReader, Transport};
+use arc_proto::id::{PairingCode, RequestId, Role, SessionId};
+use arc_proto::wire::{Command, Frame, Reply, Response};
 use cfg::RunnerConfig;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -743,8 +743,19 @@ async fn serve(session: Session) {
         match reader.recv_frame().await {
             Ok(Some(Frame::Request(request))) => {
                 tracing::info!(id = %request.id, "handling request");
-                let out = out_tx.clone();
-                handlers.spawn(async move { dispatch::handle(request, &out).await });
+                // A Forward request takes over the whole connection as a raw TCP
+                // tunnel; normal command dispatch is left completely untouched.
+                match &request.command {
+                    Command::Forward { host, port } => {
+                        let (host, port, id) = (host.clone(), *port, request.id);
+                        run_tunnel(id, host, port, &mut reader, &out_tx).await;
+                        break;
+                    }
+                    _ => {
+                        let out = out_tx.clone();
+                        handlers.spawn(async move { dispatch::handle(request, &out).await });
+                    }
+                }
             }
             // The runner only ever receives requests; ignore stray frames.
             Ok(Some(_)) => tracing::warn!("ignoring unexpected non-request frame"),
@@ -759,4 +770,78 @@ async fn serve(session: Session) {
     drop(out_tx); // close the outbox so the writer task can finish
     handlers.shutdown().await; // abort in-flight handlers (kills their children)
     let _ = writer_task.await;
+}
+
+/// Runs a [`Command::Forward`] tunnel: dial `host`(`127.0.0.1` if `None`)`:port`,
+/// ack, then pipe raw bytes both ways between that TCP socket and the session
+/// (inbound [`Frame::TunnelData`] → socket, socket reads → outbound `TunnelData`)
+/// until either side closes. Owns the connection for its lifetime — the caller
+/// stops serving once this returns.
+async fn run_tunnel(
+    id: RequestId,
+    host: Option<String>,
+    port: u16,
+    reader: &mut SessionReader,
+    out: &mpsc::Sender<Frame>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let host = host.unwrap_or_else(|| "127.0.0.1".to_owned());
+    let target = format!("{host}:{port}");
+    let stream = match tokio::net::TcpStream::connect(&target).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            let result = Err(dispatch::os_error(format!(
+                "forward dial {target} failed: {e}"
+            )));
+            let _ = out.send(Frame::Response(Response { id, result })).await;
+            return;
+        }
+    };
+    if out
+        .send(Frame::Response(Response {
+            id,
+            result: Ok(Reply::Ack),
+        }))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    tracing::info!(%target, "forward tunnel open");
+
+    let (mut rd, mut wr) = stream.into_split();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        tokio::select! {
+            frame = reader.recv_frame() => match frame {
+                Ok(Some(Frame::TunnelData(bytes))) => {
+                    if wr.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+                // Peer closed its half, sent EOF, link dropped, or a stray frame.
+                Ok(Some(Frame::TunnelEof)) | Ok(None) => break,
+                Ok(Some(_)) => {}
+                Err(e) => {
+                    tracing::warn!(%e, "tunnel receive error");
+                    break;
+                }
+            },
+            read = rd.read(&mut buf) => match read {
+                Ok(0) => {
+                    let _ = out.send(Frame::TunnelEof).await;
+                    break;
+                }
+                Ok(n) => {
+                    if out.send(Frame::TunnelData(buf[..n].to_vec())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+        }
+    }
+    let _ = wr.shutdown().await;
+    tracing::info!(%target, "forward tunnel closed");
 }

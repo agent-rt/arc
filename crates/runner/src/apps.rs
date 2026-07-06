@@ -94,6 +94,59 @@ fn recent_app_error(exe: &str) -> Option<String> {
     if msg.is_empty() { None } else { Some(msg) }
 }
 
+/// Writes a minidump of process `pid` to `%TEMP%\arc-procdump-<pid>.dmp` and
+/// returns its path + size. Captures thread stacks + thread info + module list
+/// (not full memory) — small, but enough to see where a hung process is stuck
+/// once opened in a debugger with symbols. The controller pulls the file back.
+#[cfg(windows)]
+pub fn proc_dump(pid: u32) -> RemoteResult<Reply> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::Debug::{
+        MINIDUMP_TYPE, MiniDumpNormal, MiniDumpWithThreadInfo, MiniDumpWriteDump,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+    };
+
+    let mut path = std::env::temp_dir();
+    path.push(format!("arc-procdump-{pid}.dmp"));
+    let file = std::fs::File::create(&path)
+        .map_err(|e| os_error(format!("creating dump {}: {e}", path.display())))?;
+
+    // SAFETY: `process` is a valid handle from OpenProcess (checked); `file`'s
+    // handle outlives the call (dropped after); the three optional params are
+    // null. The process handle is always closed before returning.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+            .map_err(|e| os_error(format!("OpenProcess({pid}): {e}")))?;
+        let dump_type = MINIDUMP_TYPE(MiniDumpNormal.0 | MiniDumpWithThreadInfo.0);
+        let result = MiniDumpWriteDump(
+            process,
+            pid,
+            HANDLE(file.as_raw_handle()),
+            dump_type,
+            None,
+            None,
+            None,
+        );
+        let _ = CloseHandle(process);
+        result.map_err(|e| os_error(format!("MiniDumpWriteDump({pid}): {e}")))?;
+    }
+    drop(file); // flush + close the dump file
+
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok(Reply::Dumped {
+        path: path.to_string_lossy().into_owned(),
+        size,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn proc_dump(_pid: u32) -> RemoteResult<Reply> {
+    Err(os_error("procdump is only supported on Windows".to_owned()))
+}
+
 /// Enumerates visible, titled top-level windows.
 #[cfg(windows)]
 pub fn list_windows() -> RemoteResult<Reply> {

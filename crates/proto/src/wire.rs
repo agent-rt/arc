@@ -28,6 +28,17 @@ pub enum Frame {
     Response(Response),
     /// Runner → controller: interim progress for an in-flight command.
     Event(Event),
+    /// Either direction: one chunk of raw bytes on a [`Command::Forward`] tunnel.
+    /// After the `Forward` request is acked, the connection carries only these
+    /// (a TCP proxy over the encrypted link — see `arc forward`).
+    TunnelData(Vec<u8>),
+    /// Either direction: the tunnel's sender reached EOF / is closing.
+    TunnelEof,
+    /// Forward-compat sentinel — a frame variant this build doesn't know
+    /// (`#[serde(other)]` so an older peer degrades to ignoring it rather than
+    /// dropping the link on an undecodable frame).
+    #[serde(other)]
+    Unknown,
 }
 
 /// A command to execute on the runner, tagged with a controller-unique id.
@@ -130,6 +141,15 @@ pub enum Command {
         /// needs a larger value.
         #[serde(default)]
         watch_ms: Option<u64>,
+    },
+    /// Write a minidump of a running process (by pid) to a file on the runner
+    /// and return its path via [`Reply::Dumped`]. Captures thread stacks + module
+    /// list (via `MiniDumpWriteDump`) — enough to see where a hung process is
+    /// stuck once loaded in a debugger with symbols. The controller then pulls
+    /// the file back with [`Command::ReadFile`].
+    ProcDump {
+        /// Target process id.
+        pid: u32,
     },
     /// Capture an image of the screen, a window, an element, or a region.
     Screenshot {
@@ -234,13 +254,16 @@ pub enum Command {
         /// Paths relative to `root` (forward-slash separated).
         paths: Vec<String>,
     },
-    /// Enumerate file paths under `root` (recursive), **skipping build/VCS
-    /// directories** (`target`, `bin`, `obj`, `node_modules`, `.git`) — so a
-    /// mirroring sync can prune remote files no longer present locally without
-    /// ever touching build outputs.
+    /// Enumerate file paths under `root` (recursive). By default **skips
+    /// build/VCS directories** (`target`, `bin`, `obj`, `node_modules`, `.git`) —
+    /// so a mirroring sync never touches build outputs. With `all`, only `.git`
+    /// is skipped (for pulling build artifacts back — see `pull --no-ignore`).
     ListTree {
         /// Base directory on the runner.
         root: String,
+        /// Include build dirs (everything but `.git`). Default `false`.
+        #[serde(default)]
+        all: bool,
     },
     /// Delete a single file on the runner (no-op if already absent).
     DeleteFile {
@@ -293,6 +316,27 @@ pub enum Command {
         /// Text to place on the clipboard.
         text: String,
     },
+    /// Open a TCP tunnel: the runner dials `host` (default `127.0.0.1`):`port`
+    /// and, once it acks, **this connection becomes a raw byte pipe** — both ends
+    /// relay [`Frame::TunnelData`] until [`Frame::TunnelEof`] / close. Backs
+    /// `arc forward`, so a service bound to the box's localhost (a dev server, a
+    /// debugger port) is reachable from the controller. One tunnel per connection.
+    Forward {
+        /// Host to dial on the runner; `None` = `127.0.0.1`.
+        #[serde(default)]
+        host: Option<String>,
+        /// TCP port to dial on the runner.
+        port: u16,
+    },
+    /// Forward-compat sentinel — **never sent**, only decoded. `#[serde(other)]`
+    /// makes a command variant this build doesn't know (a newer controller sent
+    /// one added after this runner was built) deserialize to this instead of
+    /// failing the whole frame. That lets the runner answer with a clear
+    /// "unsupported command, upgrade the runner" error and keep the link, rather
+    /// than dropping the connection on an undecodable frame. The associated data
+    /// is discarded (the runner can't act on a command it doesn't understand).
+    #[serde(other)]
+    Unsupported,
 }
 
 /// Interpreter selection for [`Command::RunCommand`].
@@ -577,6 +621,14 @@ pub enum Reply {
         pid: u32,
         /// Absolute path of the log file on the runner.
         log_path: String,
+    },
+    /// Result of [`Command::ProcDump`]: the minidump's path on the runner and its
+    /// size in bytes (pull it back with [`Command::ReadFile`]).
+    Dumped {
+        /// Absolute path of the `.dmp` file on the runner.
+        path: String,
+        /// Size of the dump in bytes.
+        size: u64,
     },
     /// Contents from [`Command::ReadFile`].
     FileContents(Vec<u8>),

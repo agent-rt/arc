@@ -116,6 +116,107 @@ pub(crate) fn ps_command(pattern: Option<&str>, cpu: bool) -> String {
     }
 }
 
+/// Self-check: reports link, runner identity, **session activity tier**, and a
+/// UIA smoke count, then interprets which capabilities are available right now.
+/// The session tier is the recurring gotcha — UIA + per-window capture work even
+/// when RDP is disconnected, but raw input and full-screen capture need an active
+/// session. All checks are read-only; no runner/protocol change (works on any
+/// runner).
+pub(crate) async fn doctor(controller: &mut Controller) -> Result<i32> {
+    use std::collections::HashMap;
+
+    // One round-trip gathers identity + session state + keep-display task.
+    let probe = r#"
+$id=[Security.Principal.WindowsIdentity]::GetCurrent()
+Write-Output "account=$($id.Name)"
+Write-Output "admin=$(([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))"
+Write-Output "integrity=$((whoami /groups /fo csv | ConvertFrom-Csv | Where-Object { $_.SID -like 'S-1-16-*' }).'Group Name')"
+$sid=(Get-Process -Id $PID).SessionId
+Write-Output "session=$sid"
+$state='unknown'
+foreach ($line in (query session 2>$null)) { if ($line -match "\s$sid\s+(Active|Disc|Listen)\b") { $state=$Matches[1] } }
+Write-Output "sessionState=$state"
+Write-Output "keepDisplay=$(if (schtasks /query /tn arc-keep-display 2>$null) {'present'} else {'absent'})"
+"#;
+    let stdout = match controller
+        .request(Command::RunCommand {
+            shell: Shell::PowerShell,
+            command: probe.to_owned(),
+            env: Vec::new(),
+            timeout_ms: timeout_to_ms(Some(30)),
+            stream: false,
+        })
+        .await?
+    {
+        Reply::CommandOutput { stdout, .. } => stdout,
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    let kv: HashMap<&str, &str> = stdout
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .collect();
+    let get = |k: &str| kv.get(k).copied().unwrap_or("?");
+
+    let windows = match controller.request(Command::ListWindows).await? {
+        Reply::Windows(w) => w.len(),
+        other => bail!("unexpected reply: {other:?}"),
+    };
+
+    let state = get("sessionState");
+    println!("arc doctor");
+    println!("  link         : connected");
+    println!("  account      : {}", get("account"));
+    println!("  admin        : {}", get("admin"));
+    println!("  integrity    : {}", get("integrity"));
+    println!("  session      : {} ({state})", get("session"));
+    println!("  keep-display : {}", get("keepDisplay"));
+    println!("  uia          : {windows} top-level windows visible");
+    println!();
+    if state == "Active" {
+        println!(
+            "session Active → all capabilities work: UIA, per-window & full-screen capture, raw input (type/key/mouse)."
+        );
+    } else {
+        println!(
+            "session {state} → UIA (windows/elements/click/set/read) and per-window \
+             screencap/shot work; raw input (type/key/mouse) and full-screen capture \
+             need an Active session — connect RDP, or rely on keep-display ({}).",
+            get("keepDisplay")
+        );
+    }
+    Ok(0)
+}
+
+/// Reports the runner's identity — account, integrity level, admin, session —
+/// so it's obvious whether a command runs as a real (non-elevated) user or an
+/// admin (which can mask AV/UAC/permission issues a real user would hit).
+pub(crate) async fn whoami(controller: &mut Controller) -> Result<i32> {
+    // One PowerShell block, printed as aligned `key : value` lines.
+    let command = "\
+        $id=[Security.Principal.WindowsIdentity]::GetCurrent(); \
+        $admin=([Security.Principal.WindowsPrincipal]$id).IsInRole(\
+        [Security.Principal.WindowsBuiltinRole]::Administrator); \
+        $il=(whoami /groups /fo csv | ConvertFrom-Csv | \
+        Where-Object { $_.SID -like 'S-1-16-*' }).'Group Name'; \
+        Write-Output \"account   : $($id.Name)\"; \
+        Write-Output \"admin     : $admin\"; \
+        Write-Output \"integrity : $il\"; \
+        Write-Output \"session   : $((Get-Process -Id $PID).SessionId)\""
+        .to_owned();
+    stream_run(
+        controller,
+        Command::RunCommand {
+            shell: Shell::PowerShell,
+            command,
+            env: Vec::new(),
+            timeout_ms: timeout_to_ms(Some(30)),
+            stream: true,
+        },
+    )
+    .await
+}
+
 /// Kills a remote process by PID (all-digit `target`) or by name (`-Force`).
 /// With `dry_run`, lists the matching processes instead of killing them.
 pub(crate) async fn kill(controller: &mut Controller, target: &str, dry_run: bool) -> Result<i32> {

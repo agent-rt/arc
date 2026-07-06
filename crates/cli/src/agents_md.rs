@@ -36,18 +36,36 @@ and `ARC_*` env vars override per field.
 - **Pass secrets/config:** `arc shell --env KEY=VAL …` / `--env-file f` (also on
   `arc run`) injects into the process environment, never the command line — the
   safe way to feed a token or password.
+- **Sync files:** `arc push ./src C:/work/src` — a directory push *is* an
+  incremental sync (re-run it, only changed files transfer; `.gitignore`-aware,
+  build dirs skipped). No separate `sync` verb — direction is the verb (`push`
+  up, `pull` down). To ship **build artifacts** (which are `.gitignore`'d),
+  `arc push --no-ignore ./dist C:/work/dist` (aim it at the output dir, not the
+  repo root). Best for platform-agnostic outputs (JS/managed/assets); for native
+  Windows binaries it's usually simpler to build on the box. The reverse — build
+  on the box, flow outputs back — is `arc pull --watch <remote> ./out` (poll +
+  pull changes; add `--no-ignore` to fetch from a build dir like `target/`).
 - **Inner dev loop:** `arc watch ./src C:/work/src --on-change 'cargo build'` —
-  auto-syncs on save and rebuilds on the box, output streaming.
+  auto-syncs on save and rebuilds on the box, output streaming (add `--no-ignore`
+  to watch a build-output dir and re-ship artifacts as they're produced).
 - **Long tasks (installer, restore):** `arc run --detach <script>` returns a pid +
   log path immediately instead of blocking; follow with `arc tail -f <log>`,
   manage with `arc ps` / `arc kill <pid>`. The job outlives the connection.
+- **Reach a service on the box:** `arc forward 5000:5000` tunnels local
+  `127.0.0.1:5000` to the runner's `127.0.0.1:5000` — hit a dev server / API /
+  debugger port on the box from your machine. `arc forward 5000:host:5000` dials
+  another host from the box. Runs until interrupted; direct (Tailscale) mode
+  recommended. (On Tailscale you can also reach `0.0.0.0`-bound services at the
+  box's tailnet IP directly; forward is for localhost-bound ones.)
 - **Debug via log files:** have the program write a detailed log, then read it
   back with `arc tail -f C:/…/app.log` (or `arc cat`). Reading the program's own
   log is the most reliable way to pin down where something hangs or fails —
   reach for it before trying to inspect runtime state.
 - **Diagnose a hang:** `arc ps --cpu <name>` adds an instantaneous CPU% column —
   a spinning process reads high, a thread blocked (e.g. on I/O) reads ~0%. Tells
-  a busy loop from a deadlock/wait.
+  a busy loop from a deadlock/wait. For the actual stacks, `arc procdump <pid>`
+  writes a minidump on the box and pulls it back; open it locally in WinDbg/cdb
+  with symbols.
 - **See the UI:** `arc shot ui.png --app <substr>` launches/finds the window,
   waits for it to render, activates it, and screenshots — one shot (with
   `--launch`, it fails fast if the process exits before a window appears). Or
@@ -76,14 +94,17 @@ and `ARC_*` env vars override per field.
 - **`arc shell --cmd` runs through cmd.exe** — nested quotes, pipes, and
   PowerShell one-liners get mangled by cmd parsing. For anything quote-heavy or
   multi-line, use `arc run` (ships the script as data, no shell to escape).
-- **The runner usually runs elevated (admin).** A build or launch that works via
-  arc can still fail for a normal user — Defender/AV scanning an unsigned exe,
-  UAC, code-signing, sandboxing. Verify distribution/install/subprocess features
-  at real-user privilege before calling them done.
+- **Check privilege with `arc whoami`.** An `arc-runner install` runs the runner
+  **non-elevated** (Medium integrity, not admin) — so commands already reflect a
+  real user. If yours reports `admin: True`, remember that hides issues a normal
+  user hits (AV on unsigned exes, UAC, code-signing) — and, conversely, a
+  non-admin runner can't do admin-only ops (writing Program Files, Defender
+  exclusions). `arc whoami` tells you which world you're in.
 - **Session-capability tiers:** UIA paths (`windows`/`elements`/`find`/`click`/
   `set`/`read`) and per-window `screencap`/`shot` work **even when RDP is
   disconnected**. Raw input (`type`/`key`/`mouse`) and **full-screen** capture
   need an **active** session (connected RDP, or a console/virtual display).
+  Run `arc doctor` to see the current tier (and `arc whoami` for privilege).
 - **A minimized window captures as a sliver** — `arc activate <hwnd>` first (or
   use `shot`, which activates automatically).
 - **Output and scripts are UTF-8.** Non-ASCII (e.g. 中文 / 日本語) in commands,

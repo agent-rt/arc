@@ -14,6 +14,7 @@ mod capture;
 mod config;
 mod exec;
 mod files;
+mod forward;
 mod mcp;
 mod ui;
 
@@ -26,8 +27,8 @@ use clap::{Parser, Subcommand};
 use agents_md::agents_md;
 use capture::{screencap, shot};
 use config::resolve_config;
-use exec::{kill, ps, run_script, shell, tail};
-use files::{cat, pull, push, watch};
+use exec::{doctor, kill, ps, run_script, shell, tail, whoami};
+use files::{cat, procdump, pull, push, watch};
 use ui::{clip, elements, find_elements, keys, open, windows};
 
 #[derive(Parser)]
@@ -125,11 +126,17 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Send a file or directory to the runner (directories sync incrementally).
+    /// Send a file or directory to the runner (a directory push *is* an
+    /// incremental sync — re-run it and only changed files transfer).
     ///
-    /// A single file is always copied; a directory transfers incrementally
-    /// (content-hash diff, `.gitignore`-aware, build dirs skipped) — `--whole`
-    /// forces a full copy, `--delete` mirrors.
+    /// A single file is always copied wholesale. A directory transfers
+    /// incrementally (content-hash diff, one round-trip) and is `.gitignore`-aware,
+    /// skipping build dirs (target/bin/obj/node_modules/.git) — so "code lives
+    /// here, builds happen on the box" needs no config. `--whole` forces a full
+    /// copy, `--delete` mirrors (prunes remote extras), `--no-ignore` includes
+    /// ignored files + build dirs (for shipping build artifacts — point it at the
+    /// specific output dir, e.g. `push --no-ignore ./dist C:/work/dist`, not the
+    /// repo root). For a continuous sync, use `arc watch`.
     Push {
         /// Local file or directory to send.
         local: String,
@@ -144,12 +151,19 @@ enum Cmd {
         /// Transfer every file regardless of whether it already matches.
         #[arg(long)]
         whole: bool,
+        /// Include `.gitignore`'d files and build dirs — for shipping build
+        /// artifacts (aim it at the output dir, not the repo root).
+        #[arg(long)]
+        no_ignore: bool,
     },
-    /// Fetch a file or directory from the runner (directories sync incrementally).
+    /// Fetch a file or directory from the runner (directories sync incrementally;
+    /// `--watch` keeps pulling changes — build on the box, artifacts flow back).
     ///
     /// A single file is always copied; a directory transfers incrementally
     /// (content-hash diff, build dirs excluded) — `--whole` forces a full copy,
-    /// `--delete` mirrors.
+    /// `--delete` mirrors, `--no-ignore` includes build dirs (to pull artifacts
+    /// out of e.g. `target/`), `--watch` polls the runner and pulls changes as
+    /// they appear.
     Pull {
         /// Source path on the runner.
         remote: String,
@@ -164,6 +178,16 @@ enum Cmd {
         /// Transfer every file regardless of whether it already matches.
         #[arg(long)]
         whole: bool,
+        /// Include the runner's build dirs (everything but `.git`) — for pulling
+        /// build artifacts back.
+        #[arg(long)]
+        no_ignore: bool,
+        /// Keep pulling: poll the runner and fetch changes until interrupted.
+        #[arg(long)]
+        watch: bool,
+        /// With `--watch`, seconds between polls (default 2).
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
     },
     /// Auto-push a directory on every save; `--on-change` rebuilds on the runner.
     ///
@@ -179,6 +203,10 @@ enum Cmd {
         /// the runner — e.g. `--on-change 'cargo build'`. Output streams live.
         #[arg(long, value_name = "CMD")]
         on_change: Option<String>,
+        /// Include `.gitignore`'d files and build dirs — e.g. watch a build
+        /// output dir and re-ship artifacts as they're produced.
+        #[arg(long)]
+        no_ignore: bool,
     },
     /// Print a remote file to stdout (UTF-8, lossy).
     ///
@@ -199,6 +227,27 @@ enum Cmd {
         #[arg(long)]
         cpu: bool,
     },
+    /// Report the runner's identity: account, integrity level, admin, session.
+    ///
+    /// Whether the runner is elevated decides if a build/launch reflects a real
+    /// (non-admin) user — an `arc-runner install` runs non-elevated (Medium IL).
+    Whoami,
+    /// Self-check: link, identity, session-activity tier, and a UIA smoke count.
+    ///
+    /// Interprets which capabilities work now — UIA + per-window capture work
+    /// disconnected; raw input and full-screen capture need an Active session.
+    Doctor,
+    /// Forward a local TCP port to the runner (adb/ssh `-L` style); runs until
+    /// interrupted.
+    ///
+    /// Listens on `127.0.0.1:<localport>` and tunnels each connection over the
+    /// encrypted link to the runner, which dials `<host>` (default `127.0.0.1`)
+    /// on the box — so a service bound to the box's localhost (a dev server, a
+    /// debugger port) is reachable locally. Best in direct (Tailscale) mode.
+    Forward {
+        /// `<localport>:<remoteport>` or `<localport>:<remotehost>:<remoteport>`.
+        spec: String,
+    },
     /// Kill a remote process by PID or name (`--dry-run` to preview).
     ///
     /// By PID (all digits) or by name (`-Force`); a name kills every matching
@@ -209,6 +258,14 @@ enum Cmd {
         /// List the matching processes without killing them.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Write a minidump of a process (thread stacks + modules) and pull it back —
+    /// for diagnosing a hang. Open it locally in WinDbg/cdb with symbols.
+    Procdump {
+        /// Target process id.
+        pid: u32,
+        /// Local output file (default `procdump-<pid>.dmp`).
+        out: Option<String>,
     },
     /// Print the tail of a remote file; `-f` follows it (streams appended lines
     /// until interrupted) — for watching logs.
@@ -593,6 +650,12 @@ async fn run(cli: Cli) -> Result<i32> {
         bail!("no command — see `arc --help`, or pass `--mcp` to run as an MCP server");
     };
 
+    // Forward opens its own per-connection sessions (a tunnel each) and never
+    // uses the shared request/response controller, so handle it before dialing.
+    if let Cmd::Forward { spec } = &command {
+        return forward::run(&config, spec).await;
+    }
+
     let mut controller = Controller::connect(&config)
         .await
         .context("connecting to runner")?;
@@ -631,8 +694,19 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Ps { pattern, cpu } => {
             return ps(&mut controller, pattern.as_deref(), cpu).await;
         }
+        Cmd::Whoami => {
+            return whoami(&mut controller).await;
+        }
+        Cmd::Doctor => {
+            return doctor(&mut controller).await;
+        }
+        // Handled before the controller connect (opens its own sessions).
+        Cmd::Forward { .. } => unreachable!("forward is dispatched before connecting"),
         Cmd::Kill { process, dry_run } => {
             return kill(&mut controller, &process, dry_run).await;
+        }
+        Cmd::Procdump { pid, out } => {
+            return procdump(&mut controller, pid, out.as_deref()).await;
         }
         Cmd::Tail {
             remote,
@@ -647,19 +721,57 @@ async fn run(cli: Cli) -> Result<i32> {
             delete,
             dry_run,
             whole,
-        } => push(&mut controller, &local, &remote, delete, dry_run, whole).await?,
+            no_ignore,
+        } => {
+            push(
+                &mut controller,
+                &local,
+                &remote,
+                delete,
+                dry_run,
+                whole,
+                no_ignore,
+            )
+            .await?
+        }
         Cmd::Pull {
             remote,
             local,
             delete,
             dry_run,
             whole,
-        } => pull(&mut controller, &remote, &local, delete, dry_run, whole).await?,
+            no_ignore,
+            watch,
+            interval,
+        } => {
+            pull(
+                &mut controller,
+                &remote,
+                &local,
+                delete,
+                dry_run,
+                whole,
+                no_ignore,
+                watch,
+                interval,
+            )
+            .await?
+        }
         Cmd::Watch {
             local,
             remote,
             on_change,
-        } => watch(&mut controller, &local, &remote, on_change.as_deref()).await?,
+            no_ignore,
+        } => {
+            watch(
+                &mut controller,
+                &local,
+                &remote,
+                on_change.as_deref(),
+                no_ignore,
+            )
+            .await?
+        }
         Cmd::Cat { remote } => cat(&mut controller, &remote).await?,
         Cmd::Screencap {
             out,

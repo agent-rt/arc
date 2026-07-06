@@ -98,4 +98,28 @@ mod tests {
         assert_eq!(a, 2);
         assert!(env.is_empty());
     }
+
+    // A command variant added by a newer peer must decode to the `#[serde(other)]`
+    // sentinel on an older peer — not fail the whole frame. This is what lets a
+    // runner answer "unsupported command" and keep the link instead of resetting
+    // it. (`Command::Unsupported` relies on exactly this ciborium behavior.)
+    #[test]
+    fn unknown_variant_decodes_to_serde_other() {
+        #[derive(serde::Serialize)]
+        enum Newer {
+            Future { data: String },
+        }
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        enum Older {
+            #[allow(dead_code)]
+            Known,
+            #[serde(other)]
+            Unsupported,
+        }
+        let bytes = to_cbor(&Newer::Future { data: "x".into() }).expect("encode");
+        assert_eq!(
+            from_cbor::<Older>(&bytes).expect("unknown variant decodes, not errors"),
+            Older::Unsupported
+        );
+    }
 }

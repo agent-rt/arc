@@ -21,6 +21,7 @@ const CHUNK: usize = 8 * 1024 * 1024;
 /// Sends `local` to the runner. A single file is copied wholesale; a directory
 /// transfers incrementally (skipping files whose content already matches, unless
 /// `whole`) and, with `delete`, prunes runner files absent locally.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn push(
     controller: &mut Controller,
     local: &str,
@@ -28,6 +29,7 @@ pub(crate) async fn push(
     delete: bool,
     dry_run: bool,
     whole: bool,
+    no_ignore: bool,
 ) -> Result<()> {
     let meta = std::fs::metadata(local).with_context(|| format!("stat {local}"))?;
     if !meta.is_dir() {
@@ -46,7 +48,7 @@ pub(crate) async fn push(
         total,
         bytes,
         removed,
-    } = push_tree(controller, local, remote, delete, dry_run, whole).await?;
+    } = push_tree(controller, local, remote, delete, dry_run, whole, no_ignore).await?;
     print_transfer_summary(
         dry_run, changed, total, bytes, delete, removed, local, remote,
     );
@@ -65,6 +67,7 @@ struct Stats {
 /// Incrementally pushes the directory `local` to `remote` (the body shared by
 /// `push` of a directory and `watch`), printing each transferred/deleted file
 /// and returning the counters for the caller to summarize.
+#[allow(clippy::too_many_arguments)]
 async fn push_tree(
     controller: &mut Controller,
     local: &str,
@@ -72,8 +75,9 @@ async fn push_tree(
     delete: bool,
     dry_run: bool,
     whole: bool,
+    no_ignore: bool,
 ) -> Result<Stats> {
-    let files = collect_files(Path::new(local))?;
+    let files = collect_files(Path::new(local), no_ignore)?;
     if files.is_empty() {
         return Ok(Stats::default());
     }
@@ -126,6 +130,7 @@ async fn push_tree(
         let remote_tree = match controller
             .request(Command::ListTree {
                 root: remote.to_owned(),
+                all: false,
             })
             .await?
         {
@@ -169,8 +174,9 @@ pub(crate) async fn watch(
     local: &str,
     remote: &str,
     on_change: Option<&str>,
+    no_ignore: bool,
 ) -> Result<()> {
-    let initial = push_tree(controller, local, remote, false, false, false).await?;
+    let initial = push_tree(controller, local, remote, false, false, false, no_ignore).await?;
     println!(
         "initial sync: {}/{} files ({} bytes) {local} -> {remote}",
         initial.changed, initial.total, initial.bytes
@@ -184,7 +190,7 @@ pub(crate) async fn watch(
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res
             && !matches!(event.kind, notify::EventKind::Access(_))
-            && event.paths.iter().any(|p| is_syncable(p))
+            && event.paths.iter().any(|p| is_syncable(p, no_ignore))
         {
             let _ = tx.send(());
         }
@@ -204,7 +210,7 @@ pub(crate) async fn watch(
                 Err(_) => break,
             }
         }
-        match push_tree(controller, local, remote, false, false, false).await {
+        match push_tree(controller, local, remote, false, false, false, no_ignore).await {
             Ok(s) if s.changed > 0 => {
                 println!("synced {} files ({} bytes)", s.changed, s.bytes);
                 if let Some(cmd) = on_change {
@@ -240,11 +246,13 @@ async fn run_on_change(controller: &mut Controller, cmd: &str) {
     }
 }
 
-/// True if `path` is not inside a build/VCS directory (the watcher filter).
-fn is_syncable(path: &Path) -> bool {
-    !path
-        .components()
-        .any(|c| SKIP_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
+/// True if `path` should trigger a watch resync — never inside `.git`, and
+/// (unless `no_ignore`) not inside a build directory either.
+fn is_syncable(path: &Path, no_ignore: bool) -> bool {
+    !path.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        name == ".git" || (!no_ignore && SKIP_DIRS.contains(&name.as_ref()))
+    })
 }
 
 /// Prints the trailing one-line summary shared by directory `push`/`pull`.
@@ -303,18 +311,27 @@ async fn push_bytes(controller: &mut Controller, remote: &str, data: &[u8]) -> R
 
 /// Walks `root` respecting `.gitignore`, additionally skipping [`SKIP_DIRS`];
 /// returns `(forward-slash relative path, absolute path)` per file.
-fn collect_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+fn collect_files(root: &Path, no_ignore: bool) -> Result<Vec<(String, PathBuf)>> {
     let mut files = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).hidden(false).build() {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.hidden(false);
+    if no_ignore {
+        // Ship everything under `root`, including .gitignore'd files and build
+        // dirs — for deploying build artifacts (see `push --no-ignore`).
+        builder.standard_filters(false);
+    }
+    for entry in builder.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        if rel
-            .components()
-            .any(|c| SKIP_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
-        {
+        // `.git` is never shipped, even with --no-ignore; the other build dirs
+        // are skipped only in the default (ignore-respecting) mode.
+        if rel.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name == ".git" || (!no_ignore && SKIP_DIRS.contains(&name.as_ref()))
+        }) {
             continue;
         }
         files.push((
@@ -348,6 +365,7 @@ fn blake2_hex(data: &[u8]) -> String {
 /// A non-empty [`Command::ListTree`] means `remote` is a directory (build dirs
 /// excluded); an empty one means a single file (or absent) → a file pull, which
 /// also lets you fetch one artifact from inside an otherwise-skipped build dir.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn pull(
     controller: &mut Controller,
     remote: &str,
@@ -355,10 +373,61 @@ pub(crate) async fn pull(
     delete: bool,
     dry_run: bool,
     whole: bool,
+    no_ignore: bool,
+    watch: bool,
+    interval: u64,
 ) -> Result<()> {
+    if !watch {
+        let s = pull_sync(controller, remote, local, delete, dry_run, whole, no_ignore).await?;
+        print_transfer_summary(
+            dry_run, s.changed, s.total, s.bytes, delete, s.removed, remote, local,
+        );
+        return Ok(());
+    }
+
+    // Reverse watch: poll the runner on an interval and pull only what changed —
+    // the box→controller companion to `arc watch` (build on the box, artifacts
+    // flow back). No runner-side file watcher; polling keeps it simple.
+    let initial = pull_sync(controller, remote, local, delete, false, whole, no_ignore).await?;
+    println!(
+        "initial pull: {}/{} files ({} bytes) {remote} -> {local}",
+        initial.changed, initial.total, initial.bytes
+    );
+    println!("watching {remote} every {interval}s (Ctrl+C to stop)…");
+    loop {
+        tokio::time::sleep(Duration::from_secs(interval)).await;
+        match pull_sync(controller, remote, local, delete, false, whole, no_ignore).await {
+            Ok(s) if s.changed > 0 || s.removed > 0 => {
+                let removed = if s.removed > 0 {
+                    format!(", removed {}", s.removed)
+                } else {
+                    String::new()
+                };
+                println!("pulled {} file(s) ({} bytes){removed}", s.changed, s.bytes);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("arc: pull error: {e:#}"),
+        }
+    }
+}
+
+/// One reverse-sync pass: pull `remote` → `local` incrementally, returning the
+/// counts (no summary print, so `pull --watch` can loop it). `no_ignore` lists
+/// build dirs too (for fetching artifacts).
+#[allow(clippy::too_many_arguments)]
+async fn pull_sync(
+    controller: &mut Controller,
+    remote: &str,
+    local: &str,
+    delete: bool,
+    dry_run: bool,
+    whole: bool,
+    no_ignore: bool,
+) -> Result<Stats> {
     let tree = match controller
         .request(Command::ListTree {
             root: remote.to_owned(),
+            all: no_ignore,
         })
         .await?
     {
@@ -366,13 +435,19 @@ pub(crate) async fn pull(
         other => bail!("unexpected reply: {other:?}"),
     };
     if tree.is_empty() {
-        if dry_run {
+        // A single file (or absent root): always copied wholesale.
+        let bytes = if dry_run {
             println!("would pull {remote} -> {local}");
-            return Ok(());
-        }
-        let bytes = pull_to(controller, remote, Path::new(local)).await?;
-        println!("pulled {remote} -> {local} ({bytes} bytes)");
-        return Ok(());
+            0
+        } else {
+            pull_to(controller, remote, Path::new(local)).await?
+        };
+        return Ok(Stats {
+            changed: 1,
+            total: 1,
+            bytes,
+            removed: 0,
+        });
     }
 
     let remote_hashes: HashMap<String, Option<String>> = if whole {
@@ -417,7 +492,9 @@ pub(crate) async fn pull(
     let mut removed = 0u64;
     if delete && local_root.exists() {
         let remote_set: HashSet<&str> = tree.iter().map(|s| s.as_str()).collect();
-        for (rel, abs) in collect_files(local_root)? {
+        // Pull-delete keeps its default filtering: never prune local ignored /
+        // build files just because the runner doesn't have them.
+        for (rel, abs) in collect_files(local_root, false)? {
             if remote_set.contains(rel.as_str()) {
                 continue;
             }
@@ -431,20 +508,39 @@ pub(crate) async fn pull(
         }
     }
 
-    print_transfer_summary(
-        dry_run,
+    Ok(Stats {
         changed,
-        tree.len(),
+        total: tree.len(),
         bytes,
-        delete,
         removed,
-        remote,
-        local,
-    );
-    Ok(())
+    })
 }
 
 /// Reads `remote` in chunks into `local` (creating parent dirs); returns bytes.
+/// Writes a minidump of remote process `pid` on the runner, then pulls it back
+/// to `out` (default `procdump-<pid>.dmp`). arc only captures + transfers the
+/// dump; open it locally in WinDbg/cdb with symbols to read the call stacks.
+pub(crate) async fn procdump(
+    controller: &mut Controller,
+    pid: u32,
+    out: Option<&str>,
+) -> Result<i32> {
+    let (remote, size) = match controller.request(Command::ProcDump { pid }).await? {
+        Reply::Dumped { path, size } => (path, size),
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    let default = format!("procdump-{pid}.dmp");
+    let local = Path::new(out.unwrap_or(&default));
+    println!("dump: {remote} ({size} bytes on runner) → pulling…");
+    let pulled = pull_to(controller, &remote, local).await?;
+    println!("saved {} ({pulled} bytes)", local.display());
+    println!(
+        "analyze locally, e.g.: cdb -z '{}' (needs symbols)",
+        local.display()
+    );
+    Ok(0)
+}
+
 async fn pull_to(controller: &mut Controller, remote: &str, local: &Path) -> Result<u64> {
     if let Some(parent) = local.parent()
         && !parent.as_os_str().is_empty()

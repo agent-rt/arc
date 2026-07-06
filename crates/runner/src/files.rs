@@ -14,7 +14,7 @@ const SKIP_DIRS: &[&str] = &["target", "bin", "obj", "node_modules", ".git"];
 
 /// Lists file paths (relative to `root`, forward-slash) recursively, skipping
 /// [`SKIP_DIRS`]. Missing root yields an empty listing.
-pub async fn list_tree(root: &str) -> RemoteResult<Reply> {
+pub async fn list_tree(root: &str, all: bool) -> RemoteResult<Reply> {
     let base = std::path::Path::new(root);
     let mut files = Vec::new();
     let mut stack = vec![base.to_path_buf()];
@@ -29,7 +29,9 @@ pub async fn list_tree(root: &str) -> RemoteResult<Reply> {
             let path = entry.path();
             if file_type.is_dir() {
                 let name = entry.file_name();
-                if SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
+                let name = name.to_string_lossy();
+                // `.git` is never listed; other build dirs only when `all`.
+                if name == ".git" || (!all && SKIP_DIRS.contains(&name.as_ref())) {
                     continue;
                 }
                 stack.push(path);

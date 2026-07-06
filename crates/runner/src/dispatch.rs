@@ -87,6 +87,7 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             args,
             watch_ms,
         } => blocking(move || apps::open_app(&target, &args, watch_ms)).await,
+        Command::ProcDump { pid } => blocking(move || apps::proc_dump(pid)).await,
         Command::ListWindows => blocking(apps::list_windows).await,
         Command::ListElements { window } => blocking(move || uia::list_elements(window)).await,
         Command::FindElements {
@@ -148,8 +149,20 @@ async fn dispatch_once(id: RequestId, command: Command) -> RemoteResult<Reply> {
             offset,
         } => files::write_file(&path, &contents, offset).await,
         Command::HashFiles { root, paths } => files::hash_files(&root, &paths).await,
-        Command::ListTree { root } => files::list_tree(&root).await,
+        Command::ListTree { root, all } => files::list_tree(&root, all).await,
         Command::DeleteFile { path } => files::delete_file(&path).await,
+        // A command variant added after this runner was built: `#[serde(other)]`
+        // decoded it here instead of failing the frame, so answer with a clear,
+        // link-preserving error naming this runner's version.
+        Command::Unsupported => Err(RemoteError {
+            kind: RemoteErrorKind::Invalid,
+            message: format!(
+                "unrecognized command — this arc-runner ({}) is older than the \
+                 controller and doesn't support it; upgrade the runner \
+                 (`arc-runner upgrade`)",
+                env!("CARGO_PKG_VERSION")
+            ),
+        }),
         // `Command` is `#[non_exhaustive]`; reject anything added upstream that
         // this runner build does not yet implement.
         other => Err(RemoteError {
