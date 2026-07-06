@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0
+
+Agent dev-loop improvements from real Windows usage (driving a WinUI 3 build
+end-to-end from macOS). The protocol gained additive, serde-default fields plus
+a new `RunDetached` command, so a 0.6.x runner should be upgraded
+(`arc-runner upgrade`).
+
+- **UTF-8 by default** — remote command output and `arc run` scripts now handle
+  non-ASCII (中文 / 日本語) correctly: `.ps1` scripts are written with a BOM (so
+  Windows PowerShell 5.1 stops decoding them as the ANSI code page → mojibake and
+  parse errors) and inline commands set the console to UTF-8 (`chcp 65001` +
+  `[Console]::OutputEncoding`).
+- **`arc shell --env KEY=VAL` / `--env-file <path>`** (also on `arc run`) — inject
+  environment variables into the remote process instead of the command line; the
+  safe way to pass a secret or token.
+- **`arc run -`** — read a script from stdin with `--lang ps1|bat|cmd`; pipe a
+  multi-line here-doc and it runs with no shell quoting to escape.
+- **`arc run --detach`** — launch a long task (installer, build, package restore)
+  with output redirected to a log file on the box; returns a pid + log path
+  immediately instead of blocking. Follow with `arc tail -f <log>`, manage with
+  `arc ps` / `arc kill <pid>`.
+- **`arc open` crash diagnostics** — watches the launched process briefly and, on
+  a startup crash, reports the exit code + the most recent matching Application
+  error event (faulting module + exception code) and exits non-zero. `--watch
+  <ms>` tunes the window (`0` = don't wait).
+- **`arc shot --launch`** now fails fast when the process exits before a window
+  appears, instead of waiting out `--wait`.
+- **`arc ps --cpu`** — adds an instantaneous CPU% column (sampled over ~500ms) to
+  tell a busy (spinning) process from a blocked one — for diagnosing hangs.
+- **`arc agents-md`** gained guidance on shell semantics (write PowerShell
+  directly — don't nest `powershell -Command "..."`, which re-expands `$vars`),
+  `--cmd` vs `arc run` for quote-heavy commands, launching GUI apps, log-file
+  debugging, and the admin-session caveat.
+- **MCP:** `list_processes` gains `cpu`, `open_app` gains `watch_ms`, and a new
+  `run_detached` tool.
+
 ## 0.6.1
 
 CLI-only release (no runner/protocol changes — a 0.6.0 runner works unchanged).
