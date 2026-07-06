@@ -1,0 +1,21 @@
+[package]
+name = "arc-runner-android"
+description = "Android-side runner (MVP): executes Agent shell commands over the arc protocol."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "arc-runner-android"
+path = "src/main.rs"
+
+[dependencies]
+arc-proto.workspace = true
+arc-net.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+roxmltree = "0.20"
