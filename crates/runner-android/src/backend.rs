@@ -4,7 +4,7 @@
 //! trait's "unsupported" default. File transfer is handled by the shared
 //! dispatcher, so it works with no code here.
 
-use arc_proto::id::{ElementId, WindowId};
+use arc_proto::id::{ElementId, RequestId, WindowId};
 use arc_proto::wire::Reply;
 use arc_proto::wire::{
     Capability, CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction,
@@ -40,6 +40,8 @@ impl Backend for AndroidBackend {
             Capability::ReadElement,
             Capability::SetValue,
             Capability::FocusElement,
+            Capability::RunDetached,
+            Capability::ProcDump,
         ]
     }
 
@@ -148,5 +150,20 @@ impl Backend for AndroidBackend {
 
     async fn focus_element(&self, element: ElementId) -> RemoteResult<Reply> {
         cap::focus_element(&element).await
+    }
+
+    async fn run_detached(
+        &self,
+        id: RequestId,
+        _shell: Shell,
+        content: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> RemoteResult<Reply> {
+        cap::run_detached(id, &content, &args, &env).await
+    }
+
+    async fn proc_dump(&self, pid: u32) -> RemoteResult<Reply> {
+        cap::proc_dump(pid).await
     }
 }

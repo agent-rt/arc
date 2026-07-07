@@ -3,7 +3,7 @@
 //! at the runner's shell privilege. Everything shells out — the same shape as the
 //! Windows runner calling Win32/PowerShell, just different tools.
 
-use arc_proto::id::{ElementId, WindowId};
+use arc_proto::id::{ElementId, RequestId, WindowId};
 use arc_proto::wire::{
     CaptureTarget, ClickTarget, ElementInfo, ElementQuery, Image, ImageFormat, Key, Modifier,
     MouseAction, ProcessInfo, Rect, RemoteError, RemoteErrorKind, Reply, WindowInfo,
@@ -42,6 +42,76 @@ async fn run(program: &str, args: &[&str]) -> Result<Vec<u8>, RemoteError> {
         )));
     }
     Ok(output.stdout)
+}
+
+/// Launches a script **detached**: writes `content` to a temp `.sh`, spawns it
+/// with stdin from `/dev/null` and stdout+stderr to a log file, and returns
+/// immediately with the pid + log path. Uses [`std::process`] (not tokio) so
+/// dropping the handle doesn't reap or kill the child; the long-lived runner is
+/// its parent and has no controlling terminal, so the child outlives the
+/// request (and the connection). Mirrors the Windows `run_detached`.
+pub async fn run_detached(
+    id: RequestId,
+    content: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<Reply, RemoteError> {
+    let script = format!("/data/local/tmp/arc-detached-{}.sh", id.0);
+    let log = format!("/data/local/tmp/arc-detached-{}.log", id.0);
+    tokio::fs::write(&script, content)
+        .await
+        .map_err(|e| os(format!("writing detached script: {e}")))?;
+    let out = std::fs::File::create(&log).map_err(|e| os(format!("creating log {log}: {e}")))?;
+    let err = out
+        .try_clone()
+        .map_err(|e| os(format!("cloning log fd: {e}")))?;
+    let child = std::process::Command::new("sh")
+        .arg(&script)
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(out))
+        .stderr(std::process::Stdio::from(err))
+        .spawn()
+        .map_err(|e| os(format!("spawning detached process: {e}")))?;
+    Ok(Reply::Detached {
+        pid: child.id(),
+        log_path: log,
+    })
+}
+
+/// A best-effort process dump. Android's shell can't take a thread-stack
+/// minidump (`debuggerd` needs root), so this captures the readable
+/// `/proc/<pid>` entries into a text file: `cmdline`, `status`, `wchan` (what a
+/// hung process is blocked in — the key no-root hang signal), `stat`, and
+/// `maps` (own processes only; cross-uid maps are denied). Returns the file
+/// path + size, pulled back like the Windows `.dmp`.
+pub async fn proc_dump(pid: u32) -> Result<Reply, RemoteError> {
+    if tokio::fs::metadata(format!("/proc/{pid}")).await.is_err() {
+        return Err(invalid(format!("no such process: {pid}")));
+    }
+    let mut buf = String::new();
+    buf.push_str(&format!(
+        "# arc proc dump of pid {pid} (Android; no thread stacks without root)\n\n"
+    ));
+    for f in ["cmdline", "status", "wchan", "stat", "maps"] {
+        let body = tokio::fs::read_to_string(format!("/proc/{pid}/{f}"))
+            .await
+            .map(|s| s.replace('\0', " "))
+            .unwrap_or_else(|e| format!("<unavailable: {e}>"));
+        buf.push_str(&format!(
+            "===== /proc/{pid}/{f} =====\n{}\n\n",
+            body.trim_end()
+        ));
+    }
+    let path = format!("/data/local/tmp/arc-procdump-{pid}.txt");
+    tokio::fs::write(&path, &buf)
+        .await
+        .map_err(|e| os(format!("writing procdump: {e}")))?;
+    Ok(Reply::Dumped {
+        path,
+        size: buf.len() as u64,
+    })
 }
 
 /// Runs a shell command via `sh -c` and captures its output.
