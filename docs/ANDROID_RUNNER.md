@@ -89,10 +89,36 @@ relay/tailnet → `arc -t phone …`.
 ## Packaging & persistence
 
 - Build: `cargo-ndk` → `aarch64-linux-android` (and `x86_64` for emulators).
-- Distribute: a bare binary pushed to `/data/local/tmp` (MVP), later an APK
-  wrapper that manages the shell process (wireless-debug self-start) + a
-  foreground service + `BOOT_COMPLETED` re-launch.
+- Distribute: a bare binary pushed to `/data/local/tmp` (MVP).
 - Config/pairing: same `runner.toml`-style creds; `arc-runner-android pair`.
+
+### The privilege constraint (measured, not assumed)
+
+The runner works only because `adb shell` launches it under the **shell uid
+(2000)**, whose group set includes `input (1004)` — that is what makes
+`screencap` / `input` / `uiautomator` succeed. This rules out the obvious
+"foreground service APK" persistence story: an APK service runs under its *own*
+app uid and loses those privileges, so it can drive nothing. That is precisely
+the gap Shizuku fills (it keeps a shell-uid server alive and brokers calls).
+
+So persistence splits into two independently-achievable tiers:
+
+1. **Detach + self-respawn (no APK, no root) — implemented.** `setsid` detaches
+   the process from the launching `adb shell` (survives disconnect) and
+   `--supervise` re-execs the server as a child, restarting on crash with capped
+   backoff:
+
+   ```sh
+   adb shell "setsid /data/local/tmp/arc-runner-android --supervise 0.0.0.0:8787 CODE \
+     </dev/null >/data/local/tmp/arc-runner.log 2>&1 &"
+   ```
+
+   Covers shell-disconnect and crashes. Does **not** survive reboot — nothing
+   re-launches a shell-uid process after boot without external help.
+
+2. **Reboot auto-start (needs Shizuku or root).** Only a shell-uid daemon that
+   itself survives boot can relaunch the runner; on a non-root device that is
+   Shizuku's auto-start. This is coupled to the no-PC bootstrap milestone.
 
 ## Milestones
 
@@ -101,8 +127,9 @@ relay/tailnet → `arc -t phone …`.
 2. **Android MVP** — cross-compile; on an emulator or an `adb shell`-launched
    binary, prove the loop over the relay: `shell` + `shot` (screencap) +
    `click`/`type` (input) + `elements` (uiautomator). Reuse proto/net verbatim.
-3. **Reach & persistence** — Tailscale direct mode; wireless-debug self-start (or
-   Shizuku) so no PC is needed; foreground service + reboot re-launch.
+3. **Reach & persistence** — Tailscale direct mode; `setsid --supervise` for
+   detach + crash-restart (done); wireless-debug self-start or Shizuku for no-PC
+   bootstrap + reboot re-launch (a shell-uid daemon, *not* an app service).
 4. **Retail-device fallback (optional)** — APK + Accessibility + MediaProjection
    for UI-only automation where shell privilege isn't available.
 
