@@ -37,6 +37,8 @@ rsa = "0.9"
 num-bigint-dig = "0.8"
 base64 = "0.22"
 rand = "0.8"
+socket2 = "0.6.4"
+libc = "0.2.186"
 
 # JNI bindings only exist on-device; keep the host build (bins/tests) jni-free.
 [target.'cfg(target_os = "android")'.dependencies]

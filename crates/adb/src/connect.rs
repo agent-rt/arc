@@ -269,41 +269,92 @@ pub async fn find_connect_port() -> Option<u16> {
     None
 }
 
-/// Blocking parallel scan of the ephemeral range for open localhost ports.
+/// Scans the ephemeral range for open localhost ports with non-blocking connects
+/// reaped by `poll` — nmap-style. A blocking scan is bounded by cores (≈28k
+/// connects × per-connect cost ÷ cores ≈ tens of seconds); firing a whole batch
+/// of non-blocking connects at once and waiting on one `poll` collapses that to
+/// ~a second, since localhost RSTs/accepts settle immediately.
 fn scan_localhost() -> Vec<u16> {
-    use std::net::{SocketAddr, TcpStream};
     use std::sync::mpsc;
 
     const LO: u16 = 32768;
     const HI: u16 = 60999; // Android's ephemeral range; observed connect ports sit here
-    // Android filters (drops) SYNs to closed ports rather than RSTing, so each
-    // closed port costs the full timeout — heavy parallelism is what makes this
-    // bounded. Small stacks keep hundreds of threads cheap; adbd accepts on
-    // localhost in well under the timeout.
-    const THREADS: usize = 128;
-    const TIMEOUT: Duration = Duration::from_millis(60);
+    const THREADS: usize = 16;
 
+    // Split the range across OS threads: within each the connects are non-blocking
+    // + `poll`-reaped, and across threads the (surprisingly costly) socket-creation
+    // syscalls are spread over cores. Neither alone was enough — single-threaded
+    // non-blocking was still ~25s (28k socket() calls on one core).
     let ports: Vec<u16> = (LO..=HI).collect();
     let per = ports.len().div_ceil(THREADS);
     let (tx, rx) = mpsc::channel();
     for slice in ports.chunks(per) {
         let slice = slice.to_vec();
         let tx = tx.clone();
-        // 512 KiB stack: comfortably above bionic's PTHREAD_STACK_MIN so spawns
-        // actually succeed (128 KiB silently failed, collapsing the parallelism).
         let _ = std::thread::Builder::new()
             .stack_size(512 * 1024)
             .spawn(move || {
-                for p in slice {
-                    let addr = SocketAddr::from(([127, 0, 0, 1], p));
-                    if TcpStream::connect_timeout(&addr, TIMEOUT).is_ok() {
-                        let _ = tx.send(p);
-                    }
+                for p in scan_slice(&slice) {
+                    let _ = tx.send(p);
                 }
             });
     }
     drop(tx);
     rx.iter().collect()
+}
+
+/// Non-blocking connect + `poll` over one slice of ports; returns the open ones.
+fn scan_slice(ports: &[u16]) -> Vec<u16> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    use std::net::SocketAddr;
+    use std::os::fd::AsRawFd;
+
+    const BATCH: usize = 512; // stay well under the fd limit
+    const POLL_MS: libc::c_int = 400;
+
+    let mut open = Vec::new();
+    for chunk in ports.chunks(BATCH) {
+        // Fire the whole batch of non-blocking connects (each returns instantly).
+        let mut pending: Vec<(Socket, u16)> = Vec::with_capacity(chunk.len());
+        for &p in chunk {
+            let Ok(sock) = Socket::new(Domain::IPV4, Type::STREAM, None) else {
+                continue;
+            };
+            if sock.set_nonblocking(true).is_err() {
+                continue;
+            }
+            let addr: SockAddr = SocketAddr::from(([127, 0, 0, 1], p)).into();
+            match sock.connect(&addr) {
+                Ok(()) => open.push(p), // connected immediately
+                Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => pending.push((sock, p)),
+                Err(_) => {} // refused/error immediately
+            }
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        // One poll reaps the whole batch: closed ports become writable with
+        // SO_ERROR set; open ones writable with SO_ERROR == 0.
+        let mut pollfds: Vec<libc::pollfd> = pending
+            .iter()
+            .map(|(s, _)| libc::pollfd {
+                fd: s.as_raw_fd(),
+                events: libc::POLLOUT,
+                revents: 0,
+            })
+            .collect();
+        let n = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, POLL_MS) };
+        if n <= 0 {
+            continue;
+        }
+        for (i, (sock, p)) in pending.iter().enumerate() {
+            let ready = pollfds[i].revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0;
+            if ready && matches!(sock.take_error(), Ok(None)) {
+                open.push(*p);
+            }
+        }
+    }
+    open
 }
 
 /// Whether `127.0.0.1:port` answers a `CNXN` with `STLS` (an adb wireless port).

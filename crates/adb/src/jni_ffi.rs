@@ -54,8 +54,11 @@ pub extern "system" fn Java_com_github_agent_1rt_arc_AdbNative_findConnectPort<'
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jint {
-    // Multi-threaded: the port scan fans out thousands of connects, which a
-    // current-thread runtime would serialize (≈40s); across workers it's ~1-2s.
+    // Multi-threaded so the post-scan `speaks_adb` verification probes run
+    // concurrently. NB: the localhost port scan itself (in `connect`) is
+    // ~20-25s and can't be sped up — loopback connects are kernel-serialized, so
+    // fanning them across threads barely helps (measured: 25s single-thread vs
+    // 22s across 16). It's a last-resort fallback behind mDNS + the port cache.
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(8)
         .enable_all()
