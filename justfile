@@ -43,3 +43,7 @@ ci: fmt-check lint test
 release VERSION:
     @command -v cargo-release >/dev/null 2>&1 || { echo "install cargo-release first: cargo install cargo-release"; exit 1; }
     cargo release {{VERSION}} --execute
+
+# Cross-compile the APK's Rust (arc-adb) to android/arm64 (see scripts/build-android.sh).
+android-build ABI="arm64-v8a":
+    scripts/build-android.sh {{ABI}}
