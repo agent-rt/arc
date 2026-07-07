@@ -27,7 +27,7 @@ use clap::{Parser, Subcommand};
 use agents_md::agents_md;
 use capture::{screencap, shot};
 use config::resolve_config;
-use exec::{doctor, kill, ps, run_script, shell, tail, whoami};
+use exec::{capabilities, doctor, kill, ps, run_script, shell, tail, whoami};
 use files::{cat, procdump, pull, push, watch};
 use ui::{clip, elements, find_elements, keys, open, windows};
 
@@ -237,6 +237,12 @@ enum Cmd {
     /// Interprets which capabilities work now — UIA + per-window capture work
     /// disconnected; raw input and full-screen capture need an Active session.
     Doctor,
+    /// Report the runner's OS/arch/version and the commands it implements.
+    ///
+    /// The runner's capability surface varies by platform (a locked-down Android
+    /// runner has no clipboard/procdump); this asks it directly. A legacy runner
+    /// that predates the query is reported as such.
+    Capabilities,
     /// Forward a local TCP port to the runner (adb/ssh `-L` style); runs until
     /// interrupted.
     ///
@@ -699,6 +705,9 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Cmd::Doctor => {
             return doctor(&mut controller).await;
+        }
+        Cmd::Capabilities => {
+            return capabilities(&mut controller).await;
         }
         // Handled before the controller connect (opens its own sessions).
         Cmd::Forward { .. } => unreachable!("forward is dispatched before connecting"),

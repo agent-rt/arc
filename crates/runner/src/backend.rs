@@ -6,7 +6,8 @@
 
 use arc_proto::id::{ElementId, RequestId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction, Reply, Shell,
+    Capability, CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction,
+    ProcessInfo, Reply, Shell,
 };
 use arc_runner_core::{Backend, RemoteResult, os_error};
 
@@ -15,6 +16,35 @@ use crate::{apps, capture, clipboard, exec, input, uia};
 pub struct WindowsBackend;
 
 impl Backend for WindowsBackend {
+    fn capabilities(&self) -> Vec<Capability> {
+        // The Windows backend implements the full semantic surface (every method
+        // overridden below); file transfer + tunnel are added by the dispatcher.
+        vec![
+            Capability::RunCommand,
+            Capability::RunScript,
+            Capability::RunDetached,
+            Capability::Screenshot,
+            Capability::OpenApp,
+            Capability::ProcDump,
+            Capability::ListWindows,
+            Capability::ActivateWindow,
+            Capability::ListElements,
+            Capability::FindElements,
+            Capability::Click,
+            Capability::TypeText,
+            Capability::KeyChord,
+            Capability::Mouse,
+            Capability::SetValue,
+            Capability::ReadElement,
+            Capability::FocusElement,
+            Capability::ClipboardGet,
+            Capability::ClipboardSet,
+            Capability::ListProcesses,
+            Capability::KillProcess,
+            Capability::Identity,
+        ]
+    }
+
     async fn run_command(
         &self,
         shell: Shell,
@@ -149,6 +179,134 @@ impl Backend for WindowsBackend {
 
     async fn clipboard_set(&self, text: String) -> RemoteResult<Reply> {
         blocking(move || clipboard::set(&text).map(|()| Reply::Ack)).await
+    }
+
+    async fn list_processes(&self, filter: Option<String>, with_cpu: bool) -> RemoteResult<Reply> {
+        // Emit tab-delimited `pid<TAB>name<TAB>kb[<TAB>cpu]` lines (process names
+        // can't contain a tab), parsed below. `with_cpu` samples
+        // TotalProcessorTime twice ~500ms apart for an instantaneous, per-core
+        // CPU% (a spinning process reads high, a blocked one ~0). Sorting is done
+        // in Rust after parsing.
+        let filter = ps_where(filter.as_deref());
+        let command = if with_cpu {
+            format!(
+                "$n=[Environment]::ProcessorCount; $a=@{{}}; \
+                 Get-Process{filter} | ForEach-Object {{ $a[$_.Id]=$_.TotalProcessorTime.TotalMilliseconds }}; \
+                 Start-Sleep -Milliseconds 500; \
+                 Get-Process{filter} | ForEach-Object {{ \
+                   $p=$a[$_.Id]; \
+                   $c=if ($null -ne $p -and $_.TotalProcessorTime) \
+                     {{ [math]::Round((($_.TotalProcessorTime.TotalMilliseconds-$p)/500/$n)*100,1) }} else {{ 0 }}; \
+                   \"$($_.Id)`t$($_.ProcessName)`t$([int]($_.WS/1KB))`t$c\" }}"
+            )
+        } else {
+            format!(
+                "Get-Process{filter} | ForEach-Object {{ \
+                   \"$($_.Id)`t$($_.ProcessName)`t$([int]($_.WS/1KB))\" }}"
+            )
+        };
+        let stdout = run_ps(command).await?;
+        let mut procs = parse_processes(&stdout);
+        sort_processes(&mut procs, with_cpu);
+        Ok(Reply::Processes(procs))
+    }
+
+    async fn kill_process(&self, target: String, dry_run: bool) -> RemoteResult<Reply> {
+        // Select by PID (all digits) or by exact name (with/without `.exe`).
+        // SilentlyContinue so "no match" is an empty list, not an error.
+        let selector = if target.chars().all(|c| c.is_ascii_digit()) {
+            format!("Get-Process -Id {target} -ErrorAction SilentlyContinue")
+        } else {
+            let name = target
+                .strip_suffix(".exe")
+                .unwrap_or(&target)
+                .replace('\'', "''");
+            format!("Get-Process -Name '{name}' -ErrorAction SilentlyContinue")
+        };
+        let pipe = if dry_run {
+            ""
+        } else {
+            " | Stop-Process -Force -PassThru"
+        };
+        let command =
+            format!("{selector}{pipe} | ForEach-Object {{ \"$($_.Id)`t$($_.ProcessName)\" }}");
+        let stdout = run_ps(command).await?;
+        Ok(Reply::Processes(parse_processes(&stdout)))
+    }
+
+    async fn identity(&self) -> RemoteResult<Reply> {
+        let command = "\
+            $id=[Security.Principal.WindowsIdentity]::GetCurrent(); \
+            $admin=([Security.Principal.WindowsPrincipal]$id).IsInRole(\
+            [Security.Principal.WindowsBuiltinRole]::Administrator); \
+            $il=(whoami /groups /fo csv | ConvertFrom-Csv | \
+            Where-Object { $_.SID -like 'S-1-16-*' }).'Group Name'; \
+            Write-Output \"account`t$($id.Name)\"; \
+            Write-Output \"admin`t$admin\"; \
+            Write-Output \"integrity`t$il\"; \
+            Write-Output \"session`t$((Get-Process -Id $PID).SessionId)\""
+            .to_owned();
+        let stdout = run_ps(command).await?;
+        let lines = stdout
+            .lines()
+            .filter_map(|l| {
+                let (k, v) = l.split_once('\t')?;
+                Some((k.trim().to_owned(), v.trim().to_owned()))
+            })
+            .collect();
+        Ok(Reply::Identity(lines))
+    }
+}
+
+/// A `Get-Process` name filter (`| Where-Object …`), or empty for no filter.
+fn ps_where(filter: Option<&str>) -> String {
+    match filter {
+        Some(p) => format!(
+            " | Where-Object {{ $_.ProcessName -like '*{}*' }}",
+            p.replace('\'', "''")
+        ),
+        None => String::new(),
+    }
+}
+
+/// Runs a PowerShell one-liner and returns its stdout.
+async fn run_ps(command: String) -> RemoteResult<String> {
+    match exec::run_command(Shell::PowerShell, &command, &[], Some(30_000)).await? {
+        Reply::CommandOutput { stdout, .. } => Ok(stdout),
+        other => Err(os_error(format!("unexpected reply: {other:?}"))),
+    }
+}
+
+/// Parses tab-delimited `pid<TAB>name<TAB>kb[<TAB>cpu]` lines into processes.
+fn parse_processes(stdout: &str) -> Vec<ProcessInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let pid = f.next()?.trim().parse::<u32>().ok()?;
+            let name = f.next()?.trim().to_owned();
+            let memory_kb = f.next().and_then(|s| s.trim().parse::<u64>().ok());
+            let cpu_percent = f.next().and_then(|s| s.trim().parse::<f32>().ok());
+            Some(ProcessInfo {
+                pid,
+                name,
+                memory_kb,
+                cpu_percent,
+            })
+        })
+        .collect()
+}
+
+/// Sorts processes descending by CPU% (if sampled) or memory.
+fn sort_processes(procs: &mut [ProcessInfo], with_cpu: bool) {
+    if with_cpu {
+        procs.sort_by(|a, b| {
+            b.cpu_percent
+                .partial_cmp(&a.cpu_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        procs.sort_by_key(|p| std::cmp::Reverse(p.memory_kb));
     }
 }
 

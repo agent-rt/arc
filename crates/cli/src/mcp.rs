@@ -7,7 +7,7 @@ use std::time::Duration;
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::{
     CaptureTarget, ClickTarget, Command, ElementInfo, ElementQuery, Event, ImageFormat,
-    MouseAction, MouseButton, Reply, Shell, parse_chord,
+    MouseAction, MouseButton, ProcessInfo, Reply, Shell, parse_chord,
 };
 use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -661,8 +661,19 @@ impl AgentRc {
         &self,
         Parameters(args): Parameters<ListProcessesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let command = crate::exec::ps_command(args.pattern.as_deref(), args.cpu);
-        self.run_ps(command).await
+        match self
+            .dispatch(Command::ListProcesses {
+                filter: args.pattern.clone(),
+                with_cpu: args.cpu,
+            })
+            .await?
+        {
+            Reply::Processes(procs) => Ok(CallToolResult::success(vec![Content::text(blank_as(
+                format_processes(&procs, args.cpu),
+                "<no processes>",
+            ))])),
+            other => Err(unexpected(&other)),
+        }
     }
 
     #[tool(
@@ -672,27 +683,31 @@ impl AgentRc {
         &self,
         Parameters(args): Parameters<KillProcessArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let selector = if args.process.chars().all(|c| c.is_ascii_digit()) {
-            format!("Get-Process -Id {} -ErrorAction Stop", args.process)
-        } else {
-            let name = args
-                .process
-                .strip_suffix(".exe")
-                .unwrap_or(&args.process)
-                .replace('\'', "''");
-            format!("Get-Process -Name '{name}' -ErrorAction Stop")
-        };
-        let command = if args.dry_run.unwrap_or(false) {
-            format!(
-                "{selector} | ForEach-Object {{ \"would kill $($_.ProcessName) (PID $($_.Id))\" }}"
-            )
-        } else {
-            format!(
-                "{selector} | Stop-Process -Force -PassThru | \
-                 ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
-            )
-        };
-        self.run_ps(command).await
+        let dry_run = args.dry_run.unwrap_or(false);
+        match self
+            .dispatch(Command::KillProcess {
+                target: args.process.clone(),
+                dry_run,
+            })
+            .await?
+        {
+            Reply::Processes(procs) if procs.is_empty() => {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "no matching process: {}",
+                    args.process
+                ))]))
+            }
+            Reply::Processes(procs) => {
+                let verb = if dry_run { "would kill" } else { "killed" };
+                let text = procs
+                    .iter()
+                    .map(|p| format!("{verb} {} (PID {})", p.name, p.pid))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(CallToolResult::success(vec![Content::text(text)]))
+            }
+            other => Err(unexpected(&other)),
+        }
     }
 
     #[tool(
@@ -922,33 +937,6 @@ impl AgentRc {
         }
     }
 
-    /// Runs a PowerShell command (non-streaming) and returns its output as text.
-    async fn run_ps(&self, command: String) -> Result<CallToolResult, McpError> {
-        match self
-            .dispatch(Command::RunCommand {
-                shell: Shell::PowerShell,
-                command,
-                env: Vec::new(),
-                timeout_ms: Some(30_000),
-                stream: false,
-            })
-            .await?
-        {
-            Reply::CommandOutput { stdout, stderr, .. } => {
-                let body = if stderr.trim().is_empty() {
-                    stdout
-                } else {
-                    format!("{stdout}{stderr}")
-                };
-                Ok(CallToolResult::success(vec![Content::text(blank_as(
-                    body.trim_end().to_owned(),
-                    "<no output>",
-                ))]))
-            }
-            other => Err(unexpected(&other)),
-        }
-    }
-
     /// Ensures a live link, sends the command, and reconnects next time on a
     /// fatal transport error.
     async fn dispatch(&self, command: Command) -> Result<Reply, McpError> {
@@ -1077,6 +1065,28 @@ fn clamp_timeout(timeout_ms: Option<u64>) -> Option<u64> {
 
 fn unexpected(reply: &Reply) -> McpError {
     McpError::internal_error(format!("unexpected reply from runner: {reply:?}"), None)
+}
+
+/// One process per line: `pid | [cpu%] | MB | name` (fields the backend didn't
+/// measure show as `?`).
+fn format_processes(procs: &[ProcessInfo], with_cpu: bool) -> String {
+    procs
+        .iter()
+        .map(|p| {
+            let mb = p
+                .memory_kb
+                .map_or_else(|| "?".to_owned(), |k| format!("{:.1}", k as f64 / 1024.0));
+            if with_cpu {
+                let cpu = p
+                    .cpu_percent
+                    .map_or_else(|| "?".to_owned(), |c| format!("{c:.1}"));
+                format!("{} | {}% | {} MB | {}", p.pid, cpu, mb, p.name)
+            } else {
+                format!("{} | {} MB | {}", p.pid, mb, p.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Returns `placeholder` when `text` is empty, else `text`.

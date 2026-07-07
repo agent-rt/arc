@@ -7,9 +7,21 @@
 //! runner's serve loop intercepts those and calls this for everything else.
 
 use arc_proto::id::RequestId;
-use arc_proto::wire::{Command, Reply};
+use arc_proto::wire::{Capability, Command, Reply};
 
 use crate::{Backend, RemoteResult, files, invalid};
+
+/// Capabilities every runner has regardless of platform: file transfer is
+/// handled here (OS-agnostic [`files`]) and the tunnel by the serve loop, so a
+/// backend never declares them — the dispatcher merges them into the report.
+const ALWAYS: &[Capability] = &[
+    Capability::ReadFile,
+    Capability::WriteFile,
+    Capability::HashFiles,
+    Capability::ListTree,
+    Capability::DeleteFile,
+    Capability::Forward,
+];
 
 /// Executes one request against `backend`, returning its reply. `id` tags the
 /// request (used for detached-job temp names).
@@ -78,6 +90,23 @@ pub async fn dispatch<B: Backend>(
         Command::FocusElement { element } => backend.focus_element(element).await,
         Command::ClipboardGet => backend.clipboard_get().await,
         Command::ClipboardSet { text } => backend.clipboard_set(text).await,
+        Command::ListProcesses { filter, with_cpu } => {
+            backend.list_processes(filter, with_cpu).await
+        }
+        Command::KillProcess { target, dry_run } => backend.kill_process(target, dry_run).await,
+        Command::Identity => backend.identity().await,
+
+        // Self-description: the backend's declared ops plus the always-on ones.
+        Command::Capabilities => {
+            let mut commands = backend.capabilities();
+            commands.extend_from_slice(ALWAYS);
+            Ok(Reply::Capabilities {
+                os: std::env::consts::OS.to_string(),
+                arch: std::env::consts::ARCH.to_string(),
+                runner_version: env!("CARGO_PKG_VERSION").to_string(),
+                commands,
+            })
+        }
 
         // OS-agnostic file transfer.
         Command::ReadFile {

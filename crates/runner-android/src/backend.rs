@@ -7,7 +7,8 @@
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::Reply;
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction, Shell,
+    Capability, CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction,
+    Shell,
 };
 use arc_runner_core::{Backend, RemoteResult};
 
@@ -16,6 +17,31 @@ use crate::cap;
 pub struct AndroidBackend;
 
 impl Backend for AndroidBackend {
+    fn capabilities(&self) -> Vec<Capability> {
+        // Exactly the methods overridden below — shell/UI-tree/input/capture via
+        // screencap/input/uiautomator. No proc_dump, clipboard, activate_window,
+        // set_value, read_element, focus_element, or detached jobs yet.
+        vec![
+            Capability::RunCommand,
+            Capability::RunScript,
+            Capability::Screenshot,
+            Capability::OpenApp,
+            Capability::ListWindows,
+            Capability::ListElements,
+            Capability::FindElements,
+            Capability::Click,
+            Capability::TypeText,
+            Capability::KeyChord,
+            Capability::Mouse,
+            Capability::ListProcesses,
+            Capability::KillProcess,
+            Capability::Identity,
+            Capability::ActivateWindow,
+            Capability::ReadElement,
+            Capability::SetValue,
+        ]
+    }
+
     async fn run_command(
         &self,
         _shell: Shell,
@@ -93,5 +119,29 @@ impl Backend for AndroidBackend {
 
     async fn key_chord(&self, modifiers: Vec<Modifier>, key: Key) -> RemoteResult<Reply> {
         cap::key_chord(&modifiers, key).await
+    }
+
+    async fn list_processes(&self, filter: Option<String>, with_cpu: bool) -> RemoteResult<Reply> {
+        cap::list_processes(filter.as_deref(), with_cpu).await
+    }
+
+    async fn kill_process(&self, target: String, dry_run: bool) -> RemoteResult<Reply> {
+        cap::kill_process(&target, dry_run).await
+    }
+
+    async fn identity(&self) -> RemoteResult<Reply> {
+        cap::identity().await
+    }
+
+    async fn activate_window(&self, window: WindowId) -> RemoteResult<Reply> {
+        cap::activate_window(window).await
+    }
+
+    async fn read_element(&self, element: ElementId) -> RemoteResult<Reply> {
+        cap::read_element(&element).await
+    }
+
+    async fn set_value(&self, element: ElementId, value: String) -> RemoteResult<Reply> {
+        cap::set_value(&element, &value).await
     }
 }

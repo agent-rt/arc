@@ -7,7 +7,8 @@
 
 use arc_proto::id::{ElementId, RequestId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction, Reply, Shell,
+    Capability, CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction,
+    Reply, Shell,
 };
 
 use crate::{RemoteResult, invalid};
@@ -26,6 +27,14 @@ fn unsupported(op: &str) -> arc_proto::wire::RemoteError {
 /// auto-trait-bound limitation the lint warns about does not apply.
 #[allow(clippy::too_many_arguments, unused_variables, async_fn_in_trait)]
 pub trait Backend {
+    /// The OS-semantic commands this backend implements — i.e. every method it
+    /// overrides below. Required (no default) so each platform declares its
+    /// surface explicitly and honestly rather than silently inheriting a guess;
+    /// the shared dispatcher merges in the always-available file-transfer and
+    /// tunnel capabilities. Surfaced to the controller via
+    /// [`arc_proto::wire::Command::Capabilities`].
+    fn capabilities(&self) -> Vec<Capability>;
+
     /// Run a command, buffered (streaming is a serve-loop concern).
     async fn run_command(
         &self,
@@ -137,6 +146,21 @@ pub trait Backend {
 
     async fn focus_element(&self, element: ElementId) -> RemoteResult<Reply> {
         Err(unsupported("focus_element"))
+    }
+
+    /// List processes (semantic; the backend uses its OS's enumeration).
+    async fn list_processes(&self, filter: Option<String>, with_cpu: bool) -> RemoteResult<Reply> {
+        Err(unsupported("list_processes"))
+    }
+
+    /// Kill process(es) by pid or name (or, with `dry_run`, just list matches).
+    async fn kill_process(&self, target: String, dry_run: bool) -> RemoteResult<Reply> {
+        Err(unsupported("kill_process"))
+    }
+
+    /// Report the runner's identity as ordered `(label, value)` lines.
+    async fn identity(&self) -> RemoteResult<Reply> {
+        Err(unsupported("identity"))
     }
 
     async fn clipboard_get(&self) -> RemoteResult<Reply> {

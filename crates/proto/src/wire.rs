@@ -328,6 +328,46 @@ pub enum Command {
         /// TCP port to dial on the runner.
         port: u16,
     },
+    /// List the runner's processes (returns [`Reply::Processes`]). A semantic op
+    /// (not a baked-in shell command) so it works on any OS — the backend uses
+    /// its platform's native enumeration. `filter` keeps only processes whose
+    /// name contains it (case-insensitive); `with_cpu` adds a CPU% column and
+    /// sorts by it (busy vs blocked — for spotting a spinning process), else the
+    /// list is sorted by memory.
+    ListProcesses {
+        /// Case-insensitive substring filter on the process name; `None` = all.
+        #[serde(default)]
+        filter: Option<String>,
+        /// Include a CPU% column and sort by it (costlier — may sample twice).
+        #[serde(default)]
+        with_cpu: bool,
+    },
+    /// Kill process(es) by PID (all-digit `target`) or by name (every match).
+    /// Semantic (OS-independent) — the backend maps it to its native mechanism.
+    /// Returns [`Reply::Processes`] listing what was killed (or, with `dry_run`,
+    /// what *would* be killed — nothing is signalled).
+    KillProcess {
+        /// A PID (all digits) or a process name (with/without any extension).
+        target: String,
+        /// List the matching processes instead of killing them.
+        #[serde(default)]
+        dry_run: bool,
+    },
+    /// Report the runner's identity as ordered `(label, value)` lines (returns
+    /// [`Reply::Identity`]) — account/elevation on Windows, uid/user on Unix.
+    /// The fields are platform-specific, so it's a free-form list, not a fixed
+    /// struct.
+    Identity,
+    /// Ask the runner what it can do: its OS/arch, version, and the set of
+    /// commands it actually implements (returns [`Reply::Capabilities`]). Lets
+    /// the controller tailor `doctor`/`agents-md` to the real backend and refuse
+    /// unsupported operations up front instead of round-tripping to an error —
+    /// the runner's capability set varies by platform (a locked-down Android
+    /// backend has no `ProcDump`/clipboard, say). An older runner that predates
+    /// this command decodes it as [`Command::Unsupported`] and answers with the
+    /// "upgrade the runner" error, which the controller treats as "unknown — a
+    /// legacy runner", so the query degrades cleanly.
+    Capabilities,
     /// Forward-compat sentinel — **never sent**, only decoded. `#[serde(other)]`
     /// makes a command variant this build doesn't know (a newer controller sent
     /// one added after this runner was built) deserialize to this instead of
@@ -337,6 +377,48 @@ pub enum Command {
     /// is discarded (the runner can't act on a command it doesn't understand).
     #[serde(other)]
     Unsupported,
+}
+
+/// One operation a runner may implement — the discriminant of a [`Command`],
+/// carried in [`Reply::Capabilities`]. A backend declares which of these it
+/// supports so the controller knows the real capability surface (it varies by
+/// platform). Serialized as a plain string tag; an unknown tag from a *newer*
+/// runner decodes to [`Capability::Unknown`] rather than failing the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    RunCommand,
+    RunScript,
+    RunDetached,
+    OpenApp,
+    ProcDump,
+    Screenshot,
+    ListWindows,
+    ListElements,
+    FindElements,
+    ActivateWindow,
+    Click,
+    TypeText,
+    KeyChord,
+    Mouse,
+    SetValue,
+    ReadElement,
+    FocusElement,
+    ClipboardGet,
+    ClipboardSet,
+    ListProcesses,
+    KillProcess,
+    Identity,
+    ReadFile,
+    WriteFile,
+    HashFiles,
+    ListTree,
+    DeleteFile,
+    Forward,
+    /// A capability tag this build doesn't recognize (a newer runner reported an
+    /// operation added after this controller was built).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Interpreter selection for [`Command::RunCommand`].
@@ -638,8 +720,42 @@ pub enum Reply {
     Tree(Vec<String>),
     /// A text payload (e.g. from [`Command::ClipboardGet`]).
     Text(String),
+    /// Result of [`Command::ListProcesses`] / [`Command::KillProcess`]: the
+    /// processes listed (or killed / would-be-killed), already sorted.
+    Processes(Vec<ProcessInfo>),
+    /// Result of [`Command::Identity`]: ordered `(label, value)` lines to print
+    /// as-is. Platform-specific fields (Windows account/admin/integrity/session;
+    /// Unix uid/user), so it's a list rather than a fixed schema.
+    Identity(Vec<(String, String)>),
+    /// Result of [`Command::Capabilities`]: what this runner is and can do.
+    Capabilities {
+        /// Runner OS, from `std::env::consts::OS` (`"windows"`, `"android"`, …).
+        os: String,
+        /// Runner CPU architecture, from `std::env::consts::ARCH`.
+        arch: String,
+        /// Runner build version (its Cargo package version).
+        runner_version: String,
+        /// The commands this runner actually implements. Absent commands are
+        /// unsupported and will error if sent.
+        commands: Vec<Capability>,
+    },
     /// Acknowledgement for commands with no return payload.
     Ack,
+}
+
+/// One process, from [`Command::ListProcesses`] / [`Command::KillProcess`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    /// OS process id.
+    pub pid: u32,
+    /// Process/image name (no path).
+    pub name: String,
+    /// Resident/working-set memory in KiB, if the backend measured it.
+    #[serde(default)]
+    pub memory_kb: Option<u64>,
+    /// Instantaneous CPU percentage (0–100, per-core-normalized), if sampled.
+    #[serde(default)]
+    pub cpu_percent: Option<f32>,
 }
 
 /// One file's content hash for sync diffing (from [`Command::HashFiles`]).

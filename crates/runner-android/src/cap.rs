@@ -6,7 +6,7 @@
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::{
     CaptureTarget, ClickTarget, ElementInfo, ElementQuery, Image, ImageFormat, Key, Modifier,
-    MouseAction, Rect, RemoteError, RemoteErrorKind, Reply, WindowInfo,
+    MouseAction, ProcessInfo, Rect, RemoteError, RemoteErrorKind, Reply, WindowInfo,
 };
 use tokio::process::Command;
 
@@ -58,6 +58,103 @@ pub async fn run_command(script: &str) -> Result<Reply, RemoteError> {
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         exit_code: output.status.code(),
     })
+}
+
+/// Lists processes via toybox `ps`. `filter` keeps names containing it; with
+/// `with_cpu` the list is sorted by CPU% (its `%CPU` is a lifetime average, not
+/// a 500ms sample — enough to spot a busy process), else by memory.
+pub async fn list_processes(filter: Option<&str>, with_cpu: bool) -> Result<Reply, RemoteError> {
+    let mut procs = ps_snapshot().await?;
+    if let Some(f) = filter {
+        let f = f.to_lowercase();
+        procs.retain(|p| p.name.to_lowercase().contains(&f));
+    }
+    if with_cpu {
+        procs.sort_by(|a, b| {
+            b.cpu_percent
+                .partial_cmp(&a.cpu_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        procs.sort_by_key(|p| std::cmp::Reverse(p.memory_kb));
+    }
+    Ok(Reply::Processes(procs))
+}
+
+/// One `ps -A -o PID,PCPU,RSS,NAME` snapshot → [`ProcessInfo`]s. Columns are
+/// whitespace-separated with the name last (RSS is in KiB); the header is
+/// skipped.
+async fn ps_snapshot() -> Result<Vec<ProcessInfo>, RemoteError> {
+    let out = run("ps", &["-A", "-o", "PID,PCPU,RSS,NAME"]).await?;
+    let text = String::from_utf8_lossy(&out);
+    let mut procs = Vec::new();
+    for line in text.lines().skip(1) {
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(cpu), Some(rss)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        let name = it.collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            continue;
+        }
+        procs.push(ProcessInfo {
+            pid,
+            name,
+            memory_kb: rss.parse::<u64>().ok(),
+            cpu_percent: cpu.parse::<f32>().ok(),
+        });
+    }
+    Ok(procs)
+}
+
+/// Kills by PID (all-digit target) or by exact process name (case-insensitive),
+/// via `kill -9`. Returns the matched set (killed, or would-be-killed on
+/// `dry_run`). Name matching is exact — mirroring Windows `Get-Process -Name` —
+/// so a broad substring can't fan out into an accidental mass kill.
+pub async fn kill_process(target: &str, dry_run: bool) -> Result<Reply, RemoteError> {
+    let all = ps_snapshot().await?;
+    let matches: Vec<ProcessInfo> = if target.chars().all(|c| c.is_ascii_digit()) {
+        let pid: u32 = target
+            .parse()
+            .map_err(|_| invalid(format!("bad pid: {target}")))?;
+        all.into_iter().filter(|p| p.pid == pid).collect()
+    } else {
+        let want = target.strip_suffix(".exe").unwrap_or(target).to_lowercase();
+        all.into_iter()
+            .filter(|p| p.name.to_lowercase() == want)
+            .collect()
+    };
+    if !dry_run {
+        for p in &matches {
+            let _ = run("kill", &["-9", &p.pid.to_string()]).await;
+        }
+    }
+    Ok(Reply::Processes(matches))
+}
+
+/// Reports the runner's Unix identity: user/uid, whether it's root, and (best
+/// effort) its SELinux context.
+pub async fn identity() -> Result<Reply, RemoteError> {
+    let uid = String::from_utf8_lossy(&run("id", &["-u"]).await?)
+        .trim()
+        .to_string();
+    let user = String::from_utf8_lossy(&run("id", &["-un"]).await?)
+        .trim()
+        .to_string();
+    let mut lines = vec![
+        ("account".to_string(), format!("{user} (uid {uid})")),
+        ("elevated".to_string(), (uid == "0").to_string()),
+    ];
+    if let Ok(ctx) = run("id", &["-Z"]).await {
+        let ctx = String::from_utf8_lossy(&ctx).trim().to_string();
+        if !ctx.is_empty() {
+            lines.push(("selinux".to_string(), ctx));
+        }
+    }
+    Ok(Reply::Identity(lines))
 }
 
 /// `screencap -p` → a PNG. `FullScreen`/`Window` return the whole screen
@@ -133,6 +230,69 @@ pub async fn click(target: ClickTarget) -> Result<Reply, RemoteError> {
         }
     };
     run("input", &["tap", &x.to_string(), &y.to_string()]).await?;
+    Ok(Reply::Ack)
+}
+
+/// Reads one element's text: re-dumps the tree and returns the value (text,
+/// else content-desc) of the node at `id`. Android exposes no stable element
+/// handle, so the bounds-encoded id is the lookup key.
+pub async fn read_element(id: &ElementId) -> Result<Reply, RemoteError> {
+    let want = parse_bounds_id(&id.0)?;
+    let el = element_at(dump().await?, want)
+        .ok_or_else(|| invalid(format!("no element at {}", id.0)))?;
+    Ok(Reply::Text(el.value.unwrap_or_default()))
+}
+
+/// The dumped element at `want`'s centre: the smallest node whose bounds
+/// contain that point. Matches by point, not exact bounds — a field's edges
+/// reflow (e.g. a clear button appears after typing, shrinking it), so exact
+/// equality is too brittle to re-find an element across a content change.
+fn element_at(els: Vec<ElementInfo>, want: Rect) -> Option<ElementInfo> {
+    let (cx, cy) = (want.x + want.width / 2, want.y + want.height / 2);
+    els.into_iter()
+        .filter(|e| {
+            let r = &e.rect;
+            r.x <= cx && cx <= r.x + r.width && r.y <= cy && cy <= r.y + r.height
+        })
+        .min_by_key(|e| i64::from(e.rect.width) * i64::from(e.rect.height))
+}
+
+/// Sets an editable field's text. Android's shell has no UIA Value-pattern
+/// equivalent, so this focuses the field (tap its centre), clears the existing
+/// text (move to end, then backspace its current length), and `input text`s the
+/// new value. Works for ordinary editable text fields.
+pub async fn set_value(id: &ElementId, value: &str) -> Result<Reply, RemoteError> {
+    let want = parse_bounds_id(&id.0)?;
+    // Current length (so we know how many characters to delete). Bounded below.
+    let cur_len = element_at(dump().await?, want)
+        .and_then(|e| e.value)
+        .map_or(0, |v| v.chars().count());
+    // Focus by tapping the element centre.
+    let cx = (want.x + want.width / 2).to_string();
+    let cy = (want.y + want.height / 2).to_string();
+    run("input", &["tap", &cx, &cy]).await?;
+    // Move the caret to the end, then delete the existing text.
+    run("input", &["keyevent", "123"]).await?; // KEYCODE_MOVE_END
+    if cur_len > 0 {
+        // `input keyevent 67 67 …` — KEYCODE_DEL (backspace), one per char (capped).
+        let dels: Vec<&str> = std::iter::once("keyevent")
+            .chain(std::iter::repeat_n("67", cur_len.min(500)))
+            .collect();
+        run("input", &dels).await?;
+    }
+    if !value.is_empty() {
+        run("input", &["text", &value.replace(' ', "%s")]).await?;
+    }
+    Ok(Reply::Ack)
+}
+
+/// Android has a single foreground surface, so there is no background window to
+/// raise. The useful analogue of Windows' "bring the target forward so
+/// input/capture lands on a live, visible window" is to wake the screen and
+/// dismiss the keyguard (best effort — a secured lock needs the user).
+pub async fn activate_window(_window: WindowId) -> Result<Reply, RemoteError> {
+    run("input", &["keyevent", "224"]).await?; // KEYCODE_WAKEUP
+    let _ = run("wm", &["dismiss-keyguard"]).await;
     Ok(Reply::Ack)
 }
 

@@ -2,8 +2,65 @@ use std::io::Write;
 
 use anyhow::{Context, Result, bail};
 use arc_net::Controller;
-use arc_proto::wire::{Command, Event, Reply, Shell};
+use arc_proto::wire::{Capability, Command, Event, ProcessInfo, Reply, Shell};
 use tokio::sync::mpsc;
+
+/// A runner's self-description, from [`Command::Capabilities`].
+pub(crate) struct RunnerCaps {
+    pub os: String,
+    pub arch: String,
+    pub runner_version: String,
+    pub commands: Vec<Capability>,
+}
+
+impl RunnerCaps {
+    /// Whether the runner implements a given operation.
+    pub fn has(&self, cap: Capability) -> bool {
+        self.commands.contains(&cap)
+    }
+}
+
+/// Asks the runner what it is and can do. `Ok(None)` means the runner predates
+/// the `Capabilities` command (it answers with a non-fatal "unsupported" error,
+/// so the link stays up) — callers treat that as a legacy Windows runner.
+pub(crate) async fn fetch_capabilities(controller: &mut Controller) -> Result<Option<RunnerCaps>> {
+    match controller.request(Command::Capabilities).await {
+        Ok(Reply::Capabilities {
+            os,
+            arch,
+            runner_version,
+            commands,
+        }) => Ok(Some(RunnerCaps {
+            os,
+            arch,
+            runner_version,
+            commands,
+        })),
+        Ok(other) => bail!("unexpected reply: {other:?}"),
+        // A non-fatal remote error is a runner too old to know the command.
+        Err(e) if !e.is_fatal() => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `arc capabilities`: print the runner's OS/arch/version and command surface.
+pub(crate) async fn capabilities(controller: &mut Controller) -> Result<i32> {
+    match fetch_capabilities(controller).await? {
+        Some(caps) => {
+            println!(
+                "runner   : arc-runner {} ({}/{})",
+                caps.runner_version, caps.os, caps.arch
+            );
+            let mut names: Vec<String> = caps.commands.iter().map(|c| format!("{c:?}")).collect();
+            names.sort();
+            println!("commands : {}", names.join(", "));
+        }
+        None => println!(
+            "runner   : legacy — predates capability reporting (assume a full Windows surface)"
+        ),
+    }
+    Ok(0)
+}
 
 pub(crate) async fn shell(
     controller: &mut Controller,
@@ -60,59 +117,52 @@ pub(crate) fn parse_env(pairs: &[String], file: Option<&str>) -> Result<Vec<(Str
     Ok(out)
 }
 
-/// Lists remote processes via PowerShell, optionally filtered by name substring.
-/// With `cpu`, samples `TotalProcessorTime` twice ~500ms apart to add an
-/// instantaneous, per-core-normalized CPU% column (busy vs blocked) and sorts by
-/// it; without it, the fast working-set listing sorted by memory.
+/// Lists remote processes (semantic — works on any OS). `pattern` filters by
+/// name substring; `cpu` adds a CPU% column and sorts by it (busy vs blocked),
+/// else the list is sorted by memory.
 pub(crate) async fn ps(
     controller: &mut Controller,
     pattern: Option<&str>,
     cpu: bool,
 ) -> Result<i32> {
-    stream_run(
-        controller,
-        Command::RunCommand {
-            shell: Shell::PowerShell,
-            command: ps_command(pattern, cpu),
-            env: Vec::new(),
-            timeout_ms: timeout_to_ms(Some(30)),
-            stream: true,
-        },
-    )
-    .await
+    let procs = match controller
+        .request(Command::ListProcesses {
+            filter: pattern.map(str::to_owned),
+            with_cpu: cpu,
+        })
+        .await?
+    {
+        Reply::Processes(p) => p,
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    print_processes(&procs, cpu);
+    Ok(0)
 }
 
-/// Builds the `Get-Process` PowerShell for `arc ps` and the MCP `list_processes`
-/// tool (shared so they can't drift). `pattern` filters by name substring; `cpu`
-/// adds an instantaneous, per-core-normalized CPU% column (two
-/// `TotalProcessorTime` samples ~500ms apart) and sorts by it — a spinning
-/// process reads high, a blocked one ~0%, the busy-vs-blocked signal for hangs.
-pub(crate) fn ps_command(pattern: Option<&str>, cpu: bool) -> String {
-    let filter = match pattern {
-        Some(p) => format!(
-            " | Where-Object {{ $_.ProcessName -like '*{}*' }}",
-            p.replace('\'', "''")
-        ),
-        None => String::new(),
+/// Prints an aligned `PID [CPU%] MB NAME` table (MB from the KiB the runner
+/// reports; blank where the backend didn't measure a field).
+fn print_processes(procs: &[ProcessInfo], with_cpu: bool) {
+    if procs.is_empty() {
+        println!("(no matching processes)");
+        return;
+    }
+    let mb = |p: &ProcessInfo| {
+        p.memory_kb
+            .map_or_else(String::new, |k| format!("{:.1}", k as f64 / 1024.0))
     };
-    if cpu {
-        format!(
-            "$n=[Environment]::ProcessorCount; $a=@{{}}; \
-             Get-Process{filter} | ForEach-Object {{ $a[$_.Id]=$_.TotalProcessorTime.TotalMilliseconds }}; \
-             Start-Sleep -Milliseconds 500; \
-             Get-Process{filter} | Select-Object Id, ProcessName, \
-               @{{Name='CPU%';Expression={{ $p=$a[$_.Id]; \
-                 if ($null -ne $p -and $_.TotalProcessorTime) \
-                 {{ [math]::Round((($_.TotalProcessorTime.TotalMilliseconds-$p)/500/$n)*100,1) }} else {{ 0 }} }}}}, \
-               @{{Name='MB';Expression={{[math]::Round($_.WS/1MB,1)}}}} | \
-             Sort-Object -Descending 'CPU%' | Format-Table -AutoSize | Out-String -Width 200"
-        )
+    if with_cpu {
+        println!("{:>7}  {:>6}  {:>9}  NAME", "PID", "CPU%", "MB");
+        for p in procs {
+            let cpu = p
+                .cpu_percent
+                .map_or_else(String::new, |c| format!("{c:.1}"));
+            println!("{:>7}  {:>6}  {:>9}  {}", p.pid, cpu, mb(p), p.name);
+        }
     } else {
-        format!(
-            "Get-Process{filter} | Sort-Object -Descending WS | \
-             Select-Object Id, ProcessName, @{{Name='MB';Expression={{[math]::Round($_.WS/1MB,1)}}}} | \
-             Format-Table -AutoSize | Out-String -Width 200"
-        )
+        println!("{:>7}  {:>9}  NAME", "PID", "MB");
+        for p in procs {
+            println!("{:>7}  {:>9}  {}", p.pid, mb(p), p.name);
+        }
     }
 }
 
@@ -120,13 +170,35 @@ pub(crate) fn ps_command(pattern: Option<&str>, cpu: bool) -> String {
 /// UIA smoke count, then interprets which capabilities are available right now.
 /// The session tier is the recurring gotcha — UIA + per-window capture work even
 /// when RDP is disconnected, but raw input and full-screen capture need an active
-/// session. All checks are read-only; no runner/protocol change (works on any
-/// runner).
+/// session. Capability-aware: it first asks the runner what it is, so it skips
+/// the Windows-only identity/session probe on other platforms (where those
+/// concepts don't apply) instead of printing a wall of `?`.
 pub(crate) async fn doctor(controller: &mut Controller) -> Result<i32> {
     use std::collections::HashMap;
 
-    // One round-trip gathers identity + session state + keep-display task.
-    let probe = r#"
+    // What is this runner? `None` = a legacy runner (pre-capabilities), which
+    // was Windows-only, so treat the unknown as Windows and run the full probe.
+    let caps = fetch_capabilities(controller).await?;
+    let is_windows = caps.as_ref().is_none_or(|c| c.os == "windows");
+    // A capability is assumed present on a legacy runner (full Windows surface).
+    let supports = |c: Capability| caps.as_ref().is_none_or(|caps| caps.has(c));
+
+    println!("arc doctor");
+    println!("  link         : connected");
+    match &caps {
+        Some(c) => println!(
+            "  runner       : arc-runner {} ({}/{})",
+            c.runner_version, c.os, c.arch
+        ),
+        None => println!("  runner       : legacy (predates capability reporting)"),
+    }
+
+    // Windows-only: identity (account/admin/integrity) + the RDP session tier.
+    // These are meaningless on other OSes, so they're skipped there.
+    let mut state = String::new();
+    let mut keep_display = String::new();
+    if is_windows {
+        let probe = r#"
 $id=[Security.Principal.WindowsIdentity]::GetCurrent()
 Write-Output "account=$($id.Name)"
 Write-Output "admin=$(([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))"
@@ -138,51 +210,76 @@ foreach ($line in (query session 2>$null)) { if ($line -match "\s$sid\s+(Active|
 Write-Output "sessionState=$state"
 Write-Output "keepDisplay=$(if (schtasks /query /tn arc-keep-display 2>$null) {'present'} else {'absent'})"
 "#;
-    let stdout = match controller
-        .request(Command::RunCommand {
-            shell: Shell::PowerShell,
-            command: probe.to_owned(),
-            env: Vec::new(),
-            timeout_ms: timeout_to_ms(Some(30)),
-            stream: false,
-        })
-        .await?
-    {
-        Reply::CommandOutput { stdout, .. } => stdout,
-        other => bail!("unexpected reply: {other:?}"),
-    };
-    let kv: HashMap<&str, &str> = stdout
-        .lines()
-        .filter_map(|l| l.split_once('='))
-        .map(|(k, v)| (k.trim(), v.trim()))
-        .collect();
-    let get = |k: &str| kv.get(k).copied().unwrap_or("?");
+        let stdout = match controller
+            .request(Command::RunCommand {
+                shell: Shell::PowerShell,
+                command: probe.to_owned(),
+                env: Vec::new(),
+                timeout_ms: timeout_to_ms(Some(30)),
+                stream: false,
+            })
+            .await?
+        {
+            Reply::CommandOutput { stdout, .. } => stdout,
+            other => bail!("unexpected reply: {other:?}"),
+        };
+        let kv: HashMap<&str, &str> = stdout
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim(), v.trim()))
+            .collect();
+        let get = |k: &str| kv.get(k).copied().unwrap_or("?");
+        state = get("sessionState").to_string();
+        keep_display = get("keepDisplay").to_string();
+        println!("  account      : {}", get("account"));
+        println!("  admin        : {}", get("admin"));
+        println!("  integrity    : {}", get("integrity"));
+        println!("  session      : {} ({state})", get("session"));
+        println!("  keep-display : {keep_display}");
+    }
 
-    let windows = match controller.request(Command::ListWindows).await? {
-        Reply::Windows(w) => w.len(),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    // UIA smoke count — only if the runner enumerates windows at all.
+    if supports(Capability::ListWindows) {
+        let windows = match controller.request(Command::ListWindows).await? {
+            Reply::Windows(w) => w.len(),
+            other => bail!("unexpected reply: {other:?}"),
+        };
+        println!("  uia          : {windows} top-level windows visible");
+    }
 
-    let state = get("sessionState");
-    println!("arc doctor");
-    println!("  link         : connected");
-    println!("  account      : {}", get("account"));
-    println!("  admin        : {}", get("admin"));
-    println!("  integrity    : {}", get("integrity"));
-    println!("  session      : {} ({state})", get("session"));
-    println!("  keep-display : {}", get("keepDisplay"));
-    println!("  uia          : {windows} top-level windows visible");
+    // On non-Windows, list the actual command surface (there's no session tier
+    // to interpret; what matters is which ops exist).
+    if let Some(c) = caps.as_ref().filter(|_| !is_windows) {
+        let mut names: Vec<String> = c.commands.iter().map(|x| format!("{x:?}")).collect();
+        names.sort();
+        println!("  commands     : {}", names.join(", "));
+    }
+
     println!();
-    if state == "Active" {
-        println!(
-            "session Active → all capabilities work: UIA, per-window & full-screen capture, raw input (type/key/mouse)."
-        );
+    if is_windows {
+        if state == "Active" {
+            println!(
+                "session Active → all capabilities work: UIA, per-window & full-screen capture, raw input (type/key/mouse)."
+            );
+        } else {
+            let state = if state.is_empty() { "?" } else { &state };
+            let keep = if keep_display.is_empty() {
+                "?"
+            } else {
+                &keep_display
+            };
+            println!(
+                "session {state} → UIA (windows/elements/click/set/read) and per-window \
+                 screencap/shot work; raw input (type/key/mouse) and full-screen capture \
+                 need an Active session — connect RDP, or rely on keep-display ({keep})."
+            );
+        }
     } else {
+        let os = caps.as_ref().map_or("?", |c| c.os.as_str());
         println!(
-            "session {state} → UIA (windows/elements/click/set/read) and per-window \
-             screencap/shot work; raw input (type/key/mouse) and full-screen capture \
-             need an Active session — connect RDP, or rely on keep-display ({}).",
-            get("keepDisplay")
+            "runner OS {os} — UI automation runs through the platform's accessibility layer; \
+             the Windows session/integrity tiers above don't apply. `commands` lists what's \
+             implemented; anything absent returns an unsupported error."
         );
     }
     Ok(0)
@@ -192,63 +289,40 @@ Write-Output "keepDisplay=$(if (schtasks /query /tn arc-keep-display 2>$null) {'
 /// so it's obvious whether a command runs as a real (non-elevated) user or an
 /// admin (which can mask AV/UAC/permission issues a real user would hit).
 pub(crate) async fn whoami(controller: &mut Controller) -> Result<i32> {
-    // One PowerShell block, printed as aligned `key : value` lines.
-    let command = "\
-        $id=[Security.Principal.WindowsIdentity]::GetCurrent(); \
-        $admin=([Security.Principal.WindowsPrincipal]$id).IsInRole(\
-        [Security.Principal.WindowsBuiltinRole]::Administrator); \
-        $il=(whoami /groups /fo csv | ConvertFrom-Csv | \
-        Where-Object { $_.SID -like 'S-1-16-*' }).'Group Name'; \
-        Write-Output \"account   : $($id.Name)\"; \
-        Write-Output \"admin     : $admin\"; \
-        Write-Output \"integrity : $il\"; \
-        Write-Output \"session   : $((Get-Process -Id $PID).SessionId)\""
-        .to_owned();
-    stream_run(
-        controller,
-        Command::RunCommand {
-            shell: Shell::PowerShell,
-            command,
-            env: Vec::new(),
-            timeout_ms: timeout_to_ms(Some(30)),
-            stream: true,
-        },
-    )
-    .await
+    let lines = match controller.request(Command::Identity).await? {
+        Reply::Identity(l) => l,
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    let width = lines.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (k, v) in &lines {
+        println!("{k:<width$} : {v}");
+    }
+    Ok(0)
 }
 
-/// Kills a remote process by PID (all-digit `target`) or by name (`-Force`).
-/// With `dry_run`, lists the matching processes instead of killing them.
+/// Kills a remote process by PID (all-digit `target`) or by exact name. With
+/// `dry_run`, lists the matching processes instead of killing them. Semantic —
+/// the runner maps it to its OS's mechanism, so it works cross-platform.
 pub(crate) async fn kill(controller: &mut Controller, target: &str, dry_run: bool) -> Result<i32> {
-    // The process set to act on, by PID or by name (with/without a `.exe`).
-    let selector = if target.chars().all(|c| c.is_ascii_digit()) {
-        format!("Get-Process -Id {target} -ErrorAction Stop")
-    } else {
-        let name = target
-            .strip_suffix(".exe")
-            .unwrap_or(target)
-            .replace('\'', "''");
-        format!("Get-Process -Name '{name}' -ErrorAction Stop")
+    let procs = match controller
+        .request(Command::KillProcess {
+            target: target.to_owned(),
+            dry_run,
+        })
+        .await?
+    {
+        Reply::Processes(p) => p,
+        other => bail!("unexpected reply: {other:?}"),
     };
-    let command = if dry_run {
-        format!("{selector} | ForEach-Object {{ \"would kill $($_.ProcessName) (PID $($_.Id))\" }}")
-    } else {
-        format!(
-            "{selector} | Stop-Process -Force -PassThru | \
-             ForEach-Object {{ \"killed $($_.ProcessName) (PID $($_.Id))\" }}"
-        )
-    };
-    stream_run(
-        controller,
-        Command::RunCommand {
-            shell: Shell::PowerShell,
-            command,
-            env: Vec::new(),
-            timeout_ms: timeout_to_ms(Some(30)),
-            stream: true,
-        },
-    )
-    .await
+    if procs.is_empty() {
+        println!("no matching process: {target}");
+        return Ok(1);
+    }
+    let verb = if dry_run { "would kill" } else { "killed" };
+    for p in &procs {
+        println!("{verb} {} (PID {})", p.name, p.pid);
+    }
+    Ok(0)
 }
 
 /// Streams the tail of a remote file via PowerShell `Get-Content`. With
