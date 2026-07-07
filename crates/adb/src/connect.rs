@@ -13,6 +13,7 @@
 //! answered by an `OKAY` before the next).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf, split};
@@ -241,6 +242,80 @@ fn msg(command: u32, arg0: u32, arg1: u32, payload: &[u8]) -> Message {
         arg1,
         payload: payload.to_vec(),
     }
+}
+
+/// Finds the adb wireless **connect** port by probing localhost — mDNS-free and
+/// immune to multicast noise (mDNS discovery of `_adb-tls-connect` is unreliable
+/// on busy networks, but the port is a stable localhost-reachable LISTEN socket).
+/// TCP-scans the ephemeral range, then confirms a candidate speaks adb by the
+/// `CNXN → STLS` exchange. Returns the port, or `None` if wireless debugging is off.
+pub async fn find_connect_port() -> Option<u16> {
+    // Android's ephemeral range; every wireless connect port we've seen sits here.
+    const LO: u32 = 32768;
+    const HI: u32 = 61000;
+    const CONCURRENCY: u32 = 800;
+
+    let mut open: Vec<u16> = Vec::new();
+    let mut start = LO;
+    while start < HI {
+        let end = (start + CONCURRENCY).min(HI);
+        let mut set = tokio::task::JoinSet::new();
+        for p in start..end {
+            set.spawn(async move {
+                // A parsed SocketAddr (not a "127.0.0.1" tuple) avoids a per-connect
+                // getaddrinfo — those go through a bounded blocking pool and would
+                // serialize the whole scan. localhost refuses closed ports fast; the
+                // short timeout only bounds the rare filtered one.
+                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], p as u16));
+                let ok = tokio::time::timeout(Duration::from_millis(120), TcpStream::connect(addr))
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false);
+                if ok { Some(p as u16) } else { None }
+            });
+        }
+        while let Some(res) = set.join_next().await {
+            if let Ok(Some(p)) = res {
+                open.push(p);
+            }
+        }
+        start = end;
+    }
+    // Confirm which open port is adb's connect endpoint (responds STLS to CNXN).
+    for p in open {
+        if speaks_adb(p).await {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Whether `127.0.0.1:port` answers a `CNXN` with `STLS` (an adb wireless port).
+async fn speaks_adb(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(Ok(mut tcp)) =
+        tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await
+    else {
+        return false;
+    };
+    if write_msg(
+        &mut tcp,
+        &msg(
+            A_CNXN,
+            A_VERSION,
+            MAX_PAYLOAD,
+            b"host::features=shell_v2,cmd",
+        ),
+    )
+    .await
+    .is_err()
+    {
+        return false;
+    }
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), read_msg(&mut tcp)).await,
+        Ok(Ok(m)) if m.command == A_STLS,
+    )
 }
 
 /// Connects, runs `shell:<command>`, and returns the raw combined output.

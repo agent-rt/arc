@@ -47,6 +47,31 @@ pub extern "system" fn Java_com_github_agent_1rt_arc_AdbNative_generateKey<'loca
     }
 }
 
+/// Finds the adb wireless connect port by probing localhost (mDNS-free). Returns
+/// the port, or 0 if not found (Wireless debugging off).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_github_agent_1rt_arc_AdbNative_findConnectPort<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jint {
+    // Multi-threaded: the port scan fans out thousands of connects, which a
+    // current-thread runtime would serialize (≈40s); across workers it's ~1-2s.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            throw(&mut env, e);
+            return 0;
+        }
+    };
+    rt.block_on(crate::connect::find_connect_port())
+        .map(|p| p as jint)
+        .unwrap_or(0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_github_agent_1rt_arc_AdbNative_pair<'local>(
     mut env: JNIEnv<'local>,

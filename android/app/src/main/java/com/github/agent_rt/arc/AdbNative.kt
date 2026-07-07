@@ -16,6 +16,9 @@ object AdbNative {
     /** Generates a fresh adb RSA-2048 identity, returned as PKCS#8 PEM to persist. */
     external fun generateKey(): String
 
+    /** Finds the adb wireless connect port by probing localhost (mDNS-free); 0 if off. */
+    external fun findConnectPort(): Int
+
     /** One-time pairing with `adbd`'s pairing endpoint using the 6-digit code. */
     external fun pair(hostPort: String, code: String, keyPem: String, name: String)
 

@@ -13,8 +13,6 @@ import android.provider.Settings
 import android.util.Log
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
  * The no-PC bootstrap orchestrator (path 2), modelled on Shizuku's pairing
@@ -24,9 +22,10 @@ import java.util.concurrent.TimeUnit
  * 1. Runner already up (a TCP probe of its own port)?  → done, nothing to do.
  * 2. Not paired (no stored key)?  → mDNS the pairing port, collect the 6-digit
  *    code via a notification RemoteInput, pair once. Pairing is one-time.
- * 3. Paired → connect: find the connect port (cached, else mDNS), push the runner
- *    and start it supervised. If the port can't be found the device's Wireless
- *    debugging is off — guide the user to enable it (no re-pairing needed).
+ * 3. Paired → connect: find the connect port (cached, else a localhost probe in
+ *    the native engine — mDNS-free), push the runner and start it supervised. If
+ *    the port can't be found the device's Wireless debugging is off — guide the
+ *    user to enable it (no re-pairing needed).
  *
  * Overlays are avoided on purpose: the pairing Settings screen force-hides
  * non-system overlays (verified via dumpsys); the notification shade doesn't, and
@@ -151,25 +150,15 @@ class PairingService : Service() {
         finish(ok, msg)
     }
 
-    /** The connect port: try the cached one (fast TCP probe), else discover by
-     *  mDNS and cache it. The port is stable until the device reboots / toggles. */
+    /** The connect port: try the cached one (fast TCP probe), else find it by
+     *  probing localhost in the native engine (mDNS-free — mDNS discovery of the
+     *  connect service is unreliable on noisy multicast, but the port is a stable
+     *  localhost-reachable socket). The port is stable until reboot / re-toggle. */
     private fun connectPort(): Int? {
         val prefs = getSharedPreferences("arc", Context.MODE_PRIVATE)
         prefs.getInt(KEY_CONNECT_PORT, 0).takeIf { it > 0 && tcpAlive(it) }?.let { return it }
-        val found = discoverConnectPort()
+        val found = AdbNative.findConnectPort().takeIf { it > 0 }
         if (found != null) prefs.edit().putInt(KEY_CONNECT_PORT, found).apply()
-        return found
-    }
-
-    private fun discoverConnectPort(timeoutMs: Long = 12_000): Int? {
-        var found: Int? = null
-        val latch = CountDownLatch(1)
-        val m = AdbMdns(this, AdbMdns.TLS_CONNECT) { p ->
-            if (p > 0 && found == null) { found = p; latch.countDown() }
-        }
-        m.start()
-        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        m.stop()
         return found
     }
 
