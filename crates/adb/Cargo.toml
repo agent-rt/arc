@@ -1,0 +1,27 @@
+[package]
+name = "arc-adb"
+description = "Rust adb client: Android 11+ wireless pairing (SPAKE2-over-TLS) + connect, for the arc Android bootstrap."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "arc-adb-pair"
+path = "src/bin/pair.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true }
+aws-lc-sys = { version = "0.42.0", features = ["bindgen"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pki-types = "1.15.0"
+rcgen = "0.13"
