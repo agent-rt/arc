@@ -5,9 +5,7 @@
 
 use std::sync::Arc;
 
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -15,6 +13,7 @@ use tokio_rustls::TlsConnector;
 use crate::crypto::Cipher;
 use crate::key::AdbKey;
 use crate::spake2::Spake2;
+use crate::tls::client_config;
 use crate::{AdbError, Result};
 
 const PKT_SPAKE2_MSG: u8 = 0;
@@ -26,69 +25,6 @@ const ADB_RSA_PUB_KEY: u8 = 0;
 /// RFC5705 exporter label — adb passes `sizeof("adb-label") = 10`, i.e. with NUL.
 const EXPORT_LABEL: &[u8] = b"adb-label\0";
 const EXPORT_LEN: usize = 64;
-
-/// A `ServerCertVerifier` that accepts any certificate — adbd does the same on
-/// its side during pairing (the SPAKE2 code, not the cert, is the trust anchor).
-#[derive(Debug)]
-struct AcceptAnyServerCert;
-
-impl ServerCertVerifier for AcceptAnyServerCert {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
-    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-        ]
-    }
-}
-
-/// Builds a rustls client config presenting `key`'s cert and trusting any server.
-fn client_config(key: &AdbKey) -> Result<ClientConfig> {
-    // Install a crypto provider once; ignore if already set.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
-    let (cert_der, key_der) = key.tls_identity()?;
-    ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
-        .with_client_auth_cert(vec![cert_der], key_der)
-        .map_err(|e| AdbError::Tls(format!("client config: {e}")))
-}
 
 /// The 8192-byte PeerInfo struct: `{ u8 type; u8 data[8191] }`, zero-padded,
 /// carrying our ANDROID_PUBKEY line.

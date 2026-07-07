@@ -20,10 +20,12 @@
 //! a device's `adbd` over the network, logging every packet, so the protocol is
 //! nailed down before any JNI/APK packaging exists.
 
+pub mod connect;
 pub mod crypto;
 pub mod key;
 pub mod pairing;
 pub mod spake2;
+pub mod tls;
 
 /// Errors from the adb client.
 #[derive(Debug, thiserror::Error)]
