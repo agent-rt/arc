@@ -1,23 +1,19 @@
 //! Android 11+ adb wireless *pairing* handshake, ported byte-for-byte from AOSP
-//! (`PAIRING_SPEC.md`) and verified against a real `adbd`.
-//!
-//! Spike status: the TLS client identity is a throwaway ECDSA cert and the
-//! PeerInfo carries a placeholder key — enough to prove the *protocol* completes
-//! (adbd accepts any client cert during pairing, and pairing success is a pure
-//! function of the crypto exchange, not key content). Swapping in a real RSA key
-//! with ANDROID_PUBKEY encoding (so the stored authorization is usable by the
-//! later `A_STLS` connect) is the next step.
+//! (`PAIRING_SPEC.md`) and verified against a real `adbd`. On success adbd stores
+//! our [`AdbKey`]'s public key as authorized, so the later `A_STLS` connect (with
+//! a cert wrapping the same key) is accepted with no further prompt.
 
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 use crate::crypto::Cipher;
+use crate::key::AdbKey;
 use crate::spake2::Spake2;
 use crate::{AdbError, Result};
 
@@ -81,18 +77,12 @@ impl ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
-/// Builds a rustls client config that presents a (throwaway) client cert and
-/// trusts any server cert.
-fn client_config() -> Result<ClientConfig> {
+/// Builds a rustls client config presenting `key`'s cert and trusting any server.
+fn client_config(key: &AdbKey) -> Result<ClientConfig> {
     // Install a crypto provider once; ignore if already set.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    let ck = rcgen::generate_simple_self_signed(vec!["arc".to_string()])
-        .map_err(|e| AdbError::Tls(format!("cert gen: {e}")))?;
-    let cert_der = CertificateDer::from(ck.cert);
-    let key_der = PrivateKeyDer::try_from(ck.key_pair.serialize_der())
-        .map_err(|e| AdbError::Tls(format!("key: {e}")))?;
-
+    let (cert_der, key_der) = key.tls_identity()?;
     ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
@@ -100,14 +90,14 @@ fn client_config() -> Result<ClientConfig> {
         .map_err(|e| AdbError::Tls(format!("client config: {e}")))
 }
 
-/// The 8192-byte PeerInfo struct: `{ u8 type; u8 data[8191] }`, zero-padded.
-fn build_peer_info() -> Vec<u8> {
+/// The 8192-byte PeerInfo struct: `{ u8 type; u8 data[8191] }`, zero-padded,
+/// carrying our ANDROID_PUBKEY line.
+fn build_peer_info(pubkey_line: &str) -> Vec<u8> {
     let mut info = vec![0u8; PEER_INFO_SIZE];
     info[0] = ADB_RSA_PUB_KEY;
-    // TODO: real ANDROID_PUBKEY(base64) + " user@host". Placeholder for the
-    // protocol spike — adbd stores whatever bytes we send here.
-    let placeholder = b"PLACEHOLDER arc@spike";
-    info[1..1 + placeholder.len()].copy_from_slice(placeholder);
+    let line = pubkey_line.as_bytes();
+    let n = line.len().min(PEER_INFO_SIZE - 1);
+    info[1..1 + n].copy_from_slice(&line[..n]);
     info
 }
 
@@ -143,9 +133,10 @@ async fn read_packet<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(u8, Vec<u8>)
     Ok((typ, payload))
 }
 
-/// Pairs with `host_port`'s `adbd` using the 6-digit `code`.
-pub async fn pair(host_port: &str, code: &str) -> Result<()> {
-    let config = client_config()?;
+/// Pairs with `host_port`'s `adbd` using the 6-digit `code`, authorizing `key`
+/// (advertised under `name`, e.g. `arc@host`). On success adbd stores the key.
+pub async fn pair(host_port: &str, code: &str, key: &AdbKey, name: &str) -> Result<()> {
+    let config = client_config(key)?;
     let connector = TlsConnector::from(Arc::new(config));
 
     tracing::info!(%host_port, "connecting");
@@ -185,7 +176,7 @@ pub async fn pair(host_port: &str, code: &str) -> Result<()> {
 
     // PeerInfo exchange under AES-128-GCM.
     let mut cipher = Cipher::from_spake2_key(&key_material);
-    let ciphertext = cipher.encrypt(&build_peer_info())?;
+    let ciphertext = cipher.encrypt(&build_peer_info(&key.android_pubkey_line(name)))?;
     write_packet(&mut tls, PKT_PEER_INFO, &ciphertext).await?;
 
     let (typ, their_ct) = read_packet(&mut tls).await?;

@@ -21,6 +21,7 @@
 //! nailed down before any JNI/APK packaging exists.
 
 pub mod crypto;
+pub mod key;
 pub mod pairing;
 pub mod spake2;
 
