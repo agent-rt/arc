@@ -40,6 +40,8 @@ fn utf8_prefixed(shell: Shell, command: &str) -> String {
              chcp 65001 > $null; {command}"
         ),
         Shell::Cmd => format!("chcp 65001 > nul & {command}"),
+        // sh output is already UTF-8; no code-page dance.
+        Shell::Sh => command.to_owned(),
     }
 }
 
@@ -57,6 +59,11 @@ fn build(shell: Shell, command: &str, env: &[(String, String)]) -> Command {
             c.args(["/C", &command]);
             c
         }
+        Shell::Sh => {
+            let mut c = Command::new("sh");
+            c.args(["-c", &command]);
+            c
+        }
     };
     builder.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     piped(&mut builder);
@@ -68,6 +75,7 @@ fn script_ext(shell: Shell) -> &'static str {
     match shell {
         Shell::PowerShell => "ps1",
         Shell::Cmd => "bat",
+        Shell::Sh => "sh",
     }
 }
 
@@ -88,7 +96,8 @@ fn write_temp_script(id: RequestId, shell: Shell, content: &str) -> std::io::Res
             bytes.extend_from_slice(content.as_bytes());
             std::fs::write(&path, bytes)?;
         }
-        Shell::Cmd => std::fs::write(&path, content)?,
+        // cmd (OEM code page) and sh (UTF-8) both take the bytes as-is.
+        Shell::Cmd | Shell::Sh => std::fs::write(&path, content)?,
     }
     Ok(path)
 }
@@ -113,6 +122,11 @@ fn build_script(shell: Shell, path: &Path, args: &[String], env: &[(String, Stri
         Shell::Cmd => {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(path).args(args);
+            c
+        }
+        Shell::Sh => {
+            let mut c = Command::new("sh");
+            c.arg(path).args(args);
             c
         }
     };
@@ -193,6 +207,11 @@ pub fn run_detached(
         Shell::Cmd => {
             let mut c = std::process::Command::new("cmd");
             c.arg("/C").arg(&script).args(args);
+            c
+        }
+        Shell::Sh => {
+            let mut c = std::process::Command::new("sh");
+            c.arg(&script).args(args);
             c
         }
     };

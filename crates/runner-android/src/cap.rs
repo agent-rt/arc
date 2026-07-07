@@ -130,6 +130,32 @@ pub async fn run_command(script: &str) -> Result<Reply, RemoteError> {
     })
 }
 
+/// Runs a script's `content` via `sh`, passing `args` as positional parameters
+/// (`$1`, `$2`, …) and `env` as environment. `sh -c <content> sh <args…>` sets
+/// `$0` to "sh" and binds the rest positionally — so `arc run x.sh a b` reaches
+/// the script as `$1=a $2=b` instead of being silently dropped.
+pub async fn run_script(
+    content: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<Reply, RemoteError> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(content)
+        .arg("sh")
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| os(format!("spawn sh failed: {e}")))?;
+    Ok(Reply::CommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code(),
+    })
+}
+
 /// Lists processes via toybox `ps`. `filter` keeps names containing it; with
 /// `with_cpu` the list is sorted by CPU% (its `%CPU` is a lifetime average, not
 /// a 500ms sample — enough to spot a busy process), else by memory.

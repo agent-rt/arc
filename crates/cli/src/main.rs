@@ -90,20 +90,22 @@ enum Cmd {
         #[arg(trailing_var_arg = true, required = true)]
         args: Vec<String>,
     },
-    /// Run a local `.ps1`/`.bat` script on the runner (streams live).
+    /// Run a local `.ps1`/`.bat`/`.sh` script on the runner (streams live).
     ///
     /// Ships its *contents* (no pre-`push`, no shell quoting to escape) and runs
     /// it with the interpreter inferred from the extension — `.ps1` → PowerShell
-    /// (`-ExecutionPolicy Bypass`), `.bat`/`.cmd` → cmd. Args after the script
-    /// pass through to it.
+    /// (`-ExecutionPolicy Bypass`), `.bat`/`.cmd` → cmd, `.sh` → sh. An unknown
+    /// or missing extension uses the runner's default shell (sh on a Unix runner
+    /// like Android, PowerShell on Windows). Args after the script pass to it.
     Run {
-        /// Local script file (`.ps1`/`.bat`/`.cmd`), or `-` to read from stdin —
-        /// pipe a multi-line here-doc to run it with no shell quoting to escape.
+        /// Local script file (`.ps1`/`.bat`/`.cmd`/`.sh`), or `-` to read from
+        /// stdin — pipe a multi-line here-doc to run with no shell quoting.
         script: String,
-        /// Interpreter to use: `ps1`, `bat`, or `cmd`. Required with `-` (stdin
-        /// has no extension); overrides the extension for a file. Flags must
-        /// precede the script (e.g. `arc run --lang ps1 - <<'EOF'`).
-        #[arg(long, value_name = "ps1|bat|cmd")]
+        /// Interpreter to use: `ps1`, `bat`, `cmd`, or `sh`. Required with `-` on
+        /// a Windows runner (stdin has no extension; a Unix runner defaults to
+        /// sh); overrides the extension for a file. Flags must precede the script
+        /// (e.g. `arc run --lang ps1 - <<'EOF'`).
+        #[arg(long, value_name = "ps1|bat|cmd|sh")]
         lang: Option<String>,
         /// Run detached: the runner redirects output to a log file on the box and
         /// returns a pid + log path immediately, so a long task (installer, build)

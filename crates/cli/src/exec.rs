@@ -369,10 +369,13 @@ pub(crate) async fn run_script(
     env_file: Option<String>,
     args: Vec<String>,
 ) -> Result<i32> {
+    // The runner's default interpreter (sh on a Unix runner, PowerShell on
+    // Windows/legacy), used when neither `--lang` nor the file extension decides.
+    let default_shell = default_shell_for_runner(controller).await?;
     let (shell, content) = if script == "-" {
-        // stdin has no extension to infer from — default to PowerShell (arc's
-        // default shell) unless `--lang` says otherwise.
-        let shell = shell_for_lang(lang)?.unwrap_or(Shell::PowerShell);
+        // stdin has no extension to infer from — use the runner's default shell
+        // unless `--lang` says otherwise.
+        let shell = shell_for_lang(lang)?.unwrap_or(default_shell);
         let mut content = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut content)
             .context("reading script from stdin")?;
@@ -381,7 +384,7 @@ pub(crate) async fn run_script(
         // `--lang` overrides the extension; otherwise infer from the extension.
         let shell = match shell_for_lang(lang)? {
             Some(s) => s,
-            None => shell_for_script(script)?,
+            None => shell_for_script(script, default_shell)?,
         };
         let content =
             std::fs::read_to_string(script).with_context(|| format!("reading {script}"))?;
@@ -425,8 +428,19 @@ pub(crate) async fn run_script(
     .await
 }
 
-/// Maps an explicit `--lang` (`ps1`/`bat`/`cmd`, with or without a leading dot)
-/// to an interpreter. `None` means the flag was omitted (fall back to the
+/// The runner's default script interpreter, from the capability handshake:
+/// `sh` on a non-Windows runner (Android/Linux), else PowerShell (also the
+/// fallback for a legacy runner that predates the handshake — those are Windows).
+async fn default_shell_for_runner(controller: &mut Controller) -> Result<Shell> {
+    let os = fetch_capabilities(controller).await?.map(|c| c.os);
+    Ok(match os.as_deref() {
+        Some("windows") | None => Shell::PowerShell,
+        Some(_) => Shell::Sh,
+    })
+}
+
+/// Maps an explicit `--lang` (`ps1`/`bat`/`cmd`/`sh`, with or without a leading
+/// dot) to an interpreter. `None` means the flag was omitted (fall back to the
 /// extension); an unrecognized value is an error.
 fn shell_for_lang(lang: Option<&str>) -> Result<Option<Shell>> {
     match lang.map(|l| l.trim_start_matches('.').to_ascii_lowercase()) {
@@ -434,13 +448,17 @@ fn shell_for_lang(lang: Option<&str>) -> Result<Option<Shell>> {
         Some(l) => match l.as_str() {
             "ps1" | "powershell" | "pwsh" => Ok(Some(Shell::PowerShell)),
             "bat" | "cmd" => Ok(Some(Shell::Cmd)),
-            other => bail!("unsupported --lang `{other}` (expected ps1, bat, or cmd)"),
+            "sh" | "bash" => Ok(Some(Shell::Sh)),
+            other => bail!("unsupported --lang `{other}` (expected ps1, bat, cmd, or sh)"),
         },
     }
 }
 
-/// Picks the interpreter for a script by its file extension.
-fn shell_for_script(script: &str) -> Result<Shell> {
+/// Picks the interpreter for a script by its file extension. An unknown or
+/// missing extension falls back to the runner's `default` shell — except a
+/// Windows/legacy runner (default PowerShell) keeps the strict error, since its
+/// interpreters won't run arbitrary content and the guidance is helpful.
+fn shell_for_script(script: &str, default: Shell) -> Result<Shell> {
     let ext = std::path::Path::new(script)
         .extension()
         .and_then(|e| e.to_str())
@@ -448,8 +466,12 @@ fn shell_for_script(script: &str) -> Result<Shell> {
     match ext.as_deref() {
         Some("ps1") => Ok(Shell::PowerShell),
         Some("bat" | "cmd") => Ok(Shell::Cmd),
-        Some(other) => bail!("unsupported script type `.{other}` (expected .ps1, .bat, or .cmd)"),
-        None => bail!("`{script}` has no extension; expected .ps1, .bat, or .cmd"),
+        Some("sh" | "bash") => Ok(Shell::Sh),
+        _ if default == Shell::Sh => Ok(Shell::Sh),
+        Some(other) => {
+            bail!("unsupported script type `.{other}` (expected .ps1, .bat, .cmd, or .sh)")
+        }
+        None => bail!("`{script}` has no extension; expected .ps1, .bat, .cmd, or .sh"),
     }
 }
 

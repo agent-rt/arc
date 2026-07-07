@@ -1050,6 +1050,7 @@ fn format_elements(elements: &[ElementInfo]) -> String {
 fn parse_shell(shell: Option<&str>) -> Shell {
     match shell {
         Some("cmd") => Shell::Cmd,
+        Some("sh" | "bash") => Shell::Sh,
         _ => Shell::PowerShell,
     }
 }

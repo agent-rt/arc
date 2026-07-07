@@ -60,11 +60,11 @@ impl Backend for AndroidBackend {
         _id: arc_proto::id::RequestId,
         _shell: Shell,
         content: String,
-        _args: Vec<String>,
-        _env: Vec<(String, String)>,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
         _timeout_ms: Option<u64>,
     ) -> RemoteResult<Reply> {
-        cap::run_command(&content).await
+        cap::run_script(&content, &args, &env).await
     }
 
     async fn screenshot(

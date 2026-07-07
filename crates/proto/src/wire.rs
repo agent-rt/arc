@@ -428,6 +428,11 @@ pub enum Shell {
     PowerShell,
     /// Legacy `cmd.exe`.
     Cmd,
+    /// POSIX `sh` — the shell on Unix runners (Android, Linux). A Windows runner
+    /// only has it if one is on `PATH` (git-bash/WSL); otherwise the spawn fails
+    /// cleanly. The controller picks this for a non-Windows runner (from the
+    /// capability handshake) or for a `.sh` script / `--lang sh`.
+    Sh,
 }
 
 /// What [`Command::Screenshot`] should capture.
