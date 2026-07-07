@@ -286,6 +286,18 @@ pub async fn set_value(id: &ElementId, value: &str) -> Result<Reply, RemoteError
     Ok(Reply::Ack)
 }
 
+/// Gives an element keyboard focus. Android has no "focus without activating"
+/// shell primitive, so this taps the element's centre — which focuses a
+/// focusable control (a text field takes the caret + keyboard). Pairs with
+/// `key`/`type` ("focus this field, then send keys").
+pub async fn focus_element(id: &ElementId) -> Result<Reply, RemoteError> {
+    let r = parse_bounds_id(&id.0)?;
+    let cx = (r.x + r.width / 2).to_string();
+    let cy = (r.y + r.height / 2).to_string();
+    run("input", &["tap", &cx, &cy]).await?;
+    Ok(Reply::Ack)
+}
+
 /// Android has a single foreground surface, so there is no background window to
 /// raise. The useful analogue of Windows' "bring the target forward so
 /// input/capture lands on a live, visible window" is to wake the screen and

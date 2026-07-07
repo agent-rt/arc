@@ -39,6 +39,7 @@ impl Backend for AndroidBackend {
             Capability::ActivateWindow,
             Capability::ReadElement,
             Capability::SetValue,
+            Capability::FocusElement,
         ]
     }
 
@@ -143,5 +144,9 @@ impl Backend for AndroidBackend {
 
     async fn set_value(&self, element: ElementId, value: String) -> RemoteResult<Reply> {
         cap::set_value(&element, &value).await
+    }
+
+    async fn focus_element(&self, element: ElementId) -> RemoteResult<Reply> {
+        cap::focus_element(&element).await
     }
 }
