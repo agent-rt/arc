@@ -157,8 +157,27 @@ class PairingService : Service() {
     private fun connectPort(): Int? {
         val prefs = getSharedPreferences("arc", Context.MODE_PRIVATE)
         prefs.getInt(KEY_CONNECT_PORT, 0).takeIf { it > 0 && tcpAlive(it) }?.let { return it }
-        val found = AdbNative.findConnectPort().takeIf { it > 0 }
+        // Fast path: mDNS — instant when the connect service is advertised, which
+        // it is right after enabling Wireless debugging / pairing (the common
+        // bootstrap moment). Fallback: a localhost scan in the engine — reliable
+        // and immune to mDNS noise, but ~20-30s (≈28k connects bounded by cores),
+        // so it's a last resort. Either way the result is cached, so a session
+        // pays the slow path at most once.
+        val found = discoverConnectMdns(6000) ?: AdbNative.findConnectPort().takeIf { it > 0 }
         if (found != null) prefs.edit().putInt(KEY_CONNECT_PORT, found).apply()
+        return found
+    }
+
+    /** Short mDNS discovery of the connect port; null if not advertised in time. */
+    private fun discoverConnectMdns(timeoutMs: Long): Int? {
+        var found: Int? = null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val m = AdbMdns(this, AdbMdns.TLS_CONNECT) { p ->
+            if (p > 0 && found == null) { found = p; latch.countDown() }
+        }
+        m.start()
+        latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        m.stop()
         return found
     }
 

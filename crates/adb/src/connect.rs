@@ -250,51 +250,67 @@ fn msg(command: u32, arg0: u32, arg1: u32, payload: &[u8]) -> Message {
 /// TCP-scans the ephemeral range, then confirms a candidate speaks adb by the
 /// `CNXN → STLS` exchange. Returns the port, or `None` if wireless debugging is off.
 pub async fn find_connect_port() -> Option<u16> {
-    // Android's ephemeral range; every wireless connect port we've seen sits here.
-    const LO: u32 = 32768;
-    const HI: u32 = 61000;
-    const CONCURRENCY: u32 = 800;
-
-    let mut open: Vec<u16> = Vec::new();
-    let mut start = LO;
-    while start < HI {
-        let end = (start + CONCURRENCY).min(HI);
-        let mut set = tokio::task::JoinSet::new();
-        for p in start..end {
-            set.spawn(async move {
-                // A parsed SocketAddr (not a "127.0.0.1" tuple) avoids a per-connect
-                // getaddrinfo — those go through a bounded blocking pool and would
-                // serialize the whole scan. localhost refuses closed ports fast; the
-                // short timeout only bounds the rare filtered one.
-                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], p as u16));
-                let ok = tokio::time::timeout(Duration::from_millis(120), TcpStream::connect(addr))
-                    .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false);
-                if ok { Some(p as u16) } else { None }
-            });
-        }
-        while let Some(res) = set.join_next().await {
-            if let Ok(Some(p)) = res {
-                open.push(p);
-            }
-        }
-        start = end;
-    }
+    // The scan is a burst of blocking connects on OS threads (a closed localhost
+    // port RSTs instantly). Async connects were ~35s here — per-connect epoll
+    // registration serialized them; blocking threads finish in well under a second.
+    let open = tokio::task::spawn_blocking(scan_localhost).await.ok()?;
     // Confirm which open port is adb's connect endpoint (responds STLS to CNXN).
+    // Probe concurrently — localhost has many open ports (system services) and a
+    // sequential probe would pay a read timeout for each non-adb one.
+    let mut set = tokio::task::JoinSet::new();
     for p in open {
-        if speaks_adb(p).await {
+        set.spawn(async move { if speaks_adb(p).await { Some(p) } else { None } });
+    }
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(p)) = res {
             return Some(p);
         }
     }
     None
 }
 
+/// Blocking parallel scan of the ephemeral range for open localhost ports.
+fn scan_localhost() -> Vec<u16> {
+    use std::net::{SocketAddr, TcpStream};
+    use std::sync::mpsc;
+
+    const LO: u16 = 32768;
+    const HI: u16 = 60999; // Android's ephemeral range; observed connect ports sit here
+    // Android filters (drops) SYNs to closed ports rather than RSTing, so each
+    // closed port costs the full timeout — heavy parallelism is what makes this
+    // bounded. Small stacks keep hundreds of threads cheap; adbd accepts on
+    // localhost in well under the timeout.
+    const THREADS: usize = 128;
+    const TIMEOUT: Duration = Duration::from_millis(60);
+
+    let ports: Vec<u16> = (LO..=HI).collect();
+    let per = ports.len().div_ceil(THREADS);
+    let (tx, rx) = mpsc::channel();
+    for slice in ports.chunks(per) {
+        let slice = slice.to_vec();
+        let tx = tx.clone();
+        // 512 KiB stack: comfortably above bionic's PTHREAD_STACK_MIN so spawns
+        // actually succeed (128 KiB silently failed, collapsing the parallelism).
+        let _ = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                for p in slice {
+                    let addr = SocketAddr::from(([127, 0, 0, 1], p));
+                    if TcpStream::connect_timeout(&addr, TIMEOUT).is_ok() {
+                        let _ = tx.send(p);
+                    }
+                }
+            });
+    }
+    drop(tx);
+    rx.iter().collect()
+}
+
 /// Whether `127.0.0.1:port` answers a `CNXN` with `STLS` (an adb wireless port).
 async fn speaks_adb(port: u16) -> bool {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(Ok(mut tcp)) =
-        tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await
+        tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(addr)).await
     else {
         return false;
     };
@@ -313,7 +329,7 @@ async fn speaks_adb(port: u16) -> bool {
         return false;
     }
     matches!(
-        tokio::time::timeout(Duration::from_millis(500), read_msg(&mut tcp)).await,
+        tokio::time::timeout(Duration::from_millis(300), read_msg(&mut tcp)).await,
         Ok(Ok(m)) if m.command == A_STLS,
     )
 }

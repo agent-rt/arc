@@ -50,10 +50,12 @@ android-build ABI="arm64-v8a":
 
 # Build the debug APK: cross-compile the .so + runner, stage them, gradle assemble.
 android-apk:
-    scripts/build-android.sh arm64-v8a
-    cargo ndk -t arm64-v8a build -p arc-runner-android
+    # Release-stripped (profile.release: lto + strip) — the runner drops from
+    # ~87 MB to a few MB, so the on-device push is near-instant.
+    scripts/build-android.sh arm64-v8a 24 -- --release
+    cargo ndk -t arm64-v8a build --release -p arc-runner-android
     mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/assets
-    cp target/aarch64-linux-android/debug/libarc_adb.so android/app/src/main/jniLibs/arm64-v8a/
-    cp target/aarch64-linux-android/debug/arc-runner-android android/app/src/main/assets/
+    cp target/aarch64-linux-android/release/libarc_adb.so android/app/src/main/jniLibs/arm64-v8a/
+    cp target/aarch64-linux-android/release/arc-runner-android android/app/src/main/assets/
     cd android && ./gradlew :app:assembleDebug
     @echo "APK: android/app/build/outputs/apk/debug/app-debug.apk"
