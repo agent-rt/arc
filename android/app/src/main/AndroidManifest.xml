@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Needed even for localhost sockets (the JNI engine talks to local adbd). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Path 2 (no USB): a foreground service discovers the pairing port by mDNS
+         and collects the code via a notification RemoteInput (no overlay/OCR —
+         the pairing screen force-hides overlays; the notification shade doesn't). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:label="arc runner"
+        android:supportsRtl="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Pairing trigger: a controller broadcasts the code read from the
+             wireless-debugging dialog; delivery doesn't background that dialog. -->
+        <receiver
+            android:name=".PairReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.github.agent_rt.arc.PAIR" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Path 2: mDNS discovery + RemoteInput notification for the code. -->
+        <service
+            android:name=".PairingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="adb wireless pairing" />
+        </service>
+    </application>
+
+</manifest>

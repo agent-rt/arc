@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+# `cdylib` for the Android JNI `.so`; `lib` for the host harness bins + tests.
+crate-type = ["lib", "cdylib"]
+
 [[bin]]
 name = "arc-adb-pair"
 path = "src/bin/pair.rs"
@@ -33,6 +37,10 @@ rsa = "0.9"
 num-bigint-dig = "0.8"
 base64 = "0.22"
 rand = "0.8"
+
+# JNI bindings only exist on-device; keep the host build (bins/tests) jni-free.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
 
 [[bin]]
 name = "arc-adb-push"

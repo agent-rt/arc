@@ -1,0 +1,8 @@
+# machine-specific + build outputs
+local.properties
+.gradle/
+build/
+app/build/
+# generated cross-compile artifacts (populated by `just android-apk`)
+app/src/main/jniLibs/
+app/src/main/assets/arc-runner-android

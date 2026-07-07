@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">arc runner</string>
+
+    <!-- state machine -->
+    <string name="state_checking">Checking status…</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="runner_already_running">Runner already running on :%1$s ✓</string>
+    <string name="runner_started">Runner running on :%1$s ✓</string>
+    <string name="runner_no_bind">Runner failed to bind :%1$s — check /data/local/tmp/arc-runner.log</string>
+
+    <!-- pairing (one-time) -->
+    <string name="pair_open_dialog">Open Wireless debugging → “Pair device with pairing code”…</string>
+    <string name="pair_enter_in_notif">Pairing dialog detected — enter the 6-digit code in the notification.</string>
+    <string name="pair_service_found">Pairing dialog detected</string>
+    <string name="pair_enter_code">Enter pairing code</string>
+    <string name="pair_code_label">6-digit code</string>
+    <string name="pair_working">Pairing…</string>
+    <string name="pair_failed">Pairing failed</string>
+
+    <!-- connect: paired but wireless debugging is off -->
+    <string name="enable_wireless_title">Enable Wireless debugging</string>
+    <string name="enable_wireless_text">Paired already. Turn on Developer options → Wireless debugging, then tap Start again.</string>
+    <string name="open_settings">Open settings</string>
+
+    <!-- result -->
+    <string name="bootstrap_ok">arc runner ✓</string>
+    <string name="bootstrap_failed">arc bootstrap failed</string>
+</resources>

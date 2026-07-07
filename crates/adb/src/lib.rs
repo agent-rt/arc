@@ -27,6 +27,9 @@ pub mod pairing;
 pub mod spake2;
 pub mod tls;
 
+#[cfg(target_os = "android")]
+mod jni_ffi;
+
 /// Errors from the adb client.
 #[derive(Debug, thiserror::Error)]
 pub enum AdbError {

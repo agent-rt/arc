@@ -47,3 +47,13 @@ release VERSION:
 # Cross-compile the APK's Rust (arc-adb) to android/arm64 (see scripts/build-android.sh).
 android-build ABI="arm64-v8a":
     scripts/build-android.sh {{ABI}}
+
+# Build the debug APK: cross-compile the .so + runner, stage them, gradle assemble.
+android-apk:
+    scripts/build-android.sh arm64-v8a
+    cargo ndk -t arm64-v8a build -p arc-runner-android
+    mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/assets
+    cp target/aarch64-linux-android/debug/libarc_adb.so android/app/src/main/jniLibs/arm64-v8a/
+    cp target/aarch64-linux-android/debug/arc-runner-android android/app/src/main/assets/
+    cd android && ./gradlew :app:assembleDebug
+    @echo "APK: android/app/build/outputs/apk/debug/app-debug.apk"

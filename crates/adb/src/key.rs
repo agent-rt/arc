@@ -36,9 +36,12 @@ impl AdbKey {
         Ok(Self { private })
     }
 
-    /// Loads a PKCS#8 PEM private key (e.g. `~/.android/adbkey`).
+    /// Loads a PKCS#8 PEM private key (e.g. `~/.android/adbkey`). Trims
+    /// surrounding whitespace first — the strict RFC7468 parser rejects trailing
+    /// bytes, and storage round-trips (e.g. Android SharedPreferences XML) can
+    /// append indentation whitespace to the value.
     pub fn from_pkcs8_pem(pem: &str) -> Result<Self> {
-        let private = RsaPrivateKey::from_pkcs8_pem(pem)
+        let private = RsaPrivateKey::from_pkcs8_pem(pem.trim())
             .map_err(|e| AdbError::Protocol(format!("load adbkey: {e}")))?;
         Ok(Self { private })
     }
@@ -134,6 +137,15 @@ mod tests {
         let key = AdbKey::generate().unwrap();
         let (cert, _key) = key.tls_identity().expect("build tls identity");
         assert!(!cert.as_ref().is_empty());
+    }
+
+    #[test]
+    fn from_pkcs8_pem_tolerates_surrounding_whitespace() {
+        // Regression: Android SharedPreferences XML round-trips the key with
+        // trailing indentation whitespace, which the strict PEM parser rejected.
+        let key = AdbKey::generate().unwrap();
+        let pem = key.to_pkcs8_pem().unwrap();
+        AdbKey::from_pkcs8_pem(&format!("  {pem}    \n")).expect("trim before parse");
     }
 
     #[test]
