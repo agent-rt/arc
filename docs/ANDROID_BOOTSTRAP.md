@@ -81,6 +81,25 @@ Controlled experiments, not guesses. Results:
 and matches the accepted UX — user re-enables Wireless debugging (UI), then taps
 "Start" in the arc app; no re-pairing. Auto-start is out of scope (needs root).
 
+## Status: the Rust adb engine is proven end-to-end
+
+The hard part — speaking adb to `adbd` in pure Rust — is done and verified on a
+real device (KC-T304 / Android 12), no system `adb` involved (`crates/adb`):
+
+- **Pairing** (`pairing.rs`): TLS 1.3 + RFC5705 exporter + SPAKE2 (BoringSSL FFI
+  via aws-lc-sys) + AES-128-GCM PeerInfo exchange. Verified: full handshake
+  completes and the device PeerInfo decrypts.
+- **Identity** (`key.rs`): RSA-2048 + ANDROID_PUBKEY encoding cross-validated
+  byte-for-byte against system adb's `adbkey.pub`; self-signed X.509 cert.
+- **Connect** (`connect.rs`): CNXN → STLS → mid-stream TLS upgrade → `shell:`.
+  Verified: the paired key authorizes the connect (so pairing stored it usably),
+  and `shell:id` runs at **uid 2000 with the input group**.
+
+Remaining is packaging, not protocol: (a) adb **sync** (push) to transfer the
+runner binary, (b) cross-compile `arc-adb` + runner via cargo-ndk to a JNI `.so`
+(UniFFI/`jni`), (c) a thin Compose APK (pairing UI, "Start" button, `NsdManager`
+port discovery, deep-link to the Wireless-debugging toggle).
+
 ## Stages (each independently verifiable / committable)
 
 - **S0 — protocol ground truth** (no new code): experiments 1–4 above. Needs

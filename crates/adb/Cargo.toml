@@ -33,3 +33,7 @@ rsa = "0.9"
 num-bigint-dig = "0.8"
 base64 = "0.22"
 rand = "0.8"
+
+[[bin]]
+name = "arc-adb-push"
+path = "src/bin/push.rs"
