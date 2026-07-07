@@ -7,7 +7,7 @@
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::Reply;
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, Shell,
+    CaptureTarget, ClickTarget, ElementQuery, ImageFormat, Key, Modifier, MouseAction, Shell,
 };
 use arc_runner_core::{Backend, RemoteResult};
 
@@ -46,6 +46,19 @@ impl Backend for AndroidBackend {
         _settle_await_change: bool,
     ) -> RemoteResult<Reply> {
         cap::screenshot(target).await
+    }
+
+    async fn open_app(
+        &self,
+        target: String,
+        args: Vec<String>,
+        _watch_ms: Option<u64>,
+    ) -> RemoteResult<Reply> {
+        cap::open_app(&target, &args).await
+    }
+
+    async fn mouse(&self, action: MouseAction) -> RemoteResult<Reply> {
+        cap::mouse(action).await
     }
 
     async fn list_windows(&self) -> RemoteResult<Reply> {

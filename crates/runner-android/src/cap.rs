@@ -5,8 +5,8 @@
 
 use arc_proto::id::{ElementId, WindowId};
 use arc_proto::wire::{
-    CaptureTarget, ClickTarget, ElementInfo, ElementQuery, Image, ImageFormat, Key, Modifier, Rect,
-    RemoteError, RemoteErrorKind, Reply, WindowInfo,
+    CaptureTarget, ClickTarget, ElementInfo, ElementQuery, Image, ImageFormat, Key, Modifier,
+    MouseAction, Rect, RemoteError, RemoteErrorKind, Reply, WindowInfo,
 };
 use tokio::process::Command;
 
@@ -157,6 +157,89 @@ fn parse_bounds_id(id: &str) -> Result<Rect, RemoteError> {
     }
 }
 
+/// Launches an app: `am start -n <pkg>/<activity>` for a full component, else
+/// `monkey` on a bare package (its launcher activity). Reports the pid via
+/// `pidof` if the process is up (0 if not found).
+pub async fn open_app(target: &str, _args: &[String]) -> Result<Reply, RemoteError> {
+    if target.contains('/') {
+        run("am", &["start", "-n", target]).await?;
+    } else {
+        run(
+            "monkey",
+            &["-p", target, "-c", "android.intent.category.LAUNCHER", "1"],
+        )
+        .await?;
+    }
+    // Give the process a moment to come up before looking it up.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let pkg = target.split('/').next().unwrap_or(target);
+    let pid = run("pidof", &[pkg])
+        .await
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o)
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(0);
+    Ok(Reply::AppOpened {
+        window: None,
+        pid,
+        exit_code: None,
+        diagnostic: None,
+    })
+}
+
+/// Maps a mouse action to `input` gestures: click→tap, drag→swipe, scroll→a
+/// swipe from the screen centre. Move/Down/Up have no Android analogue (there is
+/// no persistent cursor) and are rejected.
+pub async fn mouse(action: MouseAction) -> Result<Reply, RemoteError> {
+    match action {
+        MouseAction::Click { x, y, .. } => {
+            run("input", &["tap", &x.to_string(), &y.to_string()]).await?;
+        }
+        MouseAction::Drag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            ..
+        } => {
+            swipe(from_x, from_y, to_x, to_y).await?;
+        }
+        MouseAction::Scroll { dx, dy } => {
+            // Swipe from the screen centre; ~300px per notch. Positive dy is
+            // "scroll down" (content moves up), so the finger swipes up.
+            let (w, h) = screen_size().await.unwrap_or((1080, 1920));
+            const STEP: i32 = 300;
+            swipe(w / 2, h / 2, w / 2 - dx * STEP, h / 2 - dy * STEP).await?;
+        }
+        MouseAction::Move { .. } | MouseAction::Down { .. } | MouseAction::Up { .. } => {
+            return Err(invalid(
+                "android has no persistent cursor — use click/drag/scroll (tap/swipe)",
+            ));
+        }
+    }
+    Ok(Reply::Ack)
+}
+
+async fn swipe(x1: i32, y1: i32, x2: i32, y2: i32) -> Result<(), RemoteError> {
+    run(
+        "input",
+        &[
+            "swipe",
+            &x1.to_string(),
+            &y1.to_string(),
+            &x2.to_string(),
+            &y2.to_string(),
+            "300",
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `input text` — spaces become `%s` (what `input` expects); passed as one argv
 /// so no shell quoting is involved.
 pub async fn type_text(text: &str) -> Result<Reply, RemoteError> {
@@ -202,20 +285,23 @@ fn android_keycode(key: &Key) -> Option<&'static str> {
 /// controller's "pick a window, then list its elements" flow has a handle. The
 /// element listing ignores the handle and dumps the current screen.
 pub async fn list_windows() -> Result<Reply, RemoteError> {
-    let focus = String::from_utf8_lossy(
+    // The resumed activity's `pkg/activity` is the closest thing to a window title.
+    let resumed = String::from_utf8_lossy(
         &run(
             "sh",
-            &["-c", "dumpsys window 2>/dev/null | grep -m1 mCurrentFocus"],
+            &[
+                "-c",
+                "dumpsys activity activities 2>/dev/null | grep -m1 mResumedActivity",
+            ],
         )
         .await
         .unwrap_or_default(),
     )
-    .trim()
-    .to_owned();
-    let title = focus
-        .split_once('/')
-        .map(|(_, a)| a.trim_end_matches('}').to_owned())
-        .filter(|s| !s.is_empty())
+    .into_owned();
+    let title = resumed
+        .split_whitespace()
+        .find(|t| t.contains('/'))
+        .map(|t| t.trim_end_matches('}').to_owned())
         .unwrap_or_else(|| "foreground".to_owned());
     let (w, h) = screen_size().await.unwrap_or((0, 0));
     Ok(Reply::Windows(vec![WindowInfo {
